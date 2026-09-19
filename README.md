@@ -1,26 +1,21 @@
 # bq-nl2sql-agent
 
-**Fork of [nl2sql-agent](https://github.com/gandhi1994/nl2sql-agent) by [gandhi1994](https://github.com/gandhi1994) (35k+ ⭐)**
+BigQuery-compatible Natural Language to SQL agent with **grounded evaluation**, **local testing via DuckDB**, **LangGraph report generation**, **auto-grader eval loop**, and **production-ready BigQuery backend**.
 
-BigQuery-compatible Natural Language to SQL agent with **grounded evaluation**, **local testing via DuckDB**, and **production-ready BigQuery backend**.
+## What Is This
 
-## What's New in This Fork
+A standalone NL2SQL agent built from the ground up, incorporating battle-tested patterns from open-source projects:
 
-**Enhanced with:**
-- **LangGraph-based report generation pipeline** with auto-grader eval loop
-- **Automated grader/eval loop** — groundedness, faithfulness, factual_precision, completeness, style adherence
-- **Report styles**: executive summary, detailed analysis, technical brief, slide deck
-- **Automated grader/eval loop** replacing human-in-the-loop
-- **32+ new golden test cases** covering all question categories
-- **Comprehensive eval framework** (Text-to-SQL + Report Generation)
-
----
+- **Text-to-SQL core** — Schema-grounded generation, sqlglot guard, bounded repair loop
+- **Report generation** — LangGraph pipeline with automated grader (groundedness, faithfulness, factual_precision, completeness, style)
+- **Multi-backend** — DuckDB for local testing, BigQuery for production
+- **Eval-first** — Execution accuracy + result match + judge rescue + report quality metrics
 
 ## Quick Start (Local Testing)
 
 ```bash
 # Clone and install
-git clone https://github.com/your-org/bq-nl2sql-agent.git
+git clone https://github.com/Prithvi1994/bq-nl2sql-agent.git
 cd bq-nl2sql-agent
 pip install -e .
 
@@ -227,7 +222,7 @@ python test_eval.py
 
 ## Report Generation Pipeline
 
-The fork includes a **LangGraph-based report generation pipeline** with auto-grader eval loop:
+The project includes a **LangGraph-based report generation pipeline** with auto-grader eval loop:
 
 ```bash
 # Generate a report
@@ -311,12 +306,98 @@ agent = NL2SQLAgent(..., schema=schema, executor=run_query_bigquery)
 | `prompts.py` | Generation/repair/judge/grader prompts |
 | `cli_local.py` | Zero-setup local testing CLI |
 
+## Architecture & Design Decisions
+
+**This project uses neither LangGraph nor ADK for the core agent** — it's a lightweight, transparent agent loop (`agent.py`) that you fully own and understand.
+
+- **No framework lock-in** — ~300 lines of core logic
+- **Easy to extend** — swap LLM, schema, executor, guard independently
+- **Grounded eval built-in** — not an afterthought
+
+**LangGraph is used only for the report generation pipeline** where its state machine shines:
+- Multi-step generation with quality gates
+- Auto-grader feedback loops
+- Human-in-the-loop checkpoints
+- Checkpointing and observability
+
+Use **LangGraph** if you need:
+- Complex multi-agent orchestration
+- Human-in-the-loop approvals
+- Stateful long-running workflows
+- Visual debugging
+
+Use **ADK (Agent Development Kit)** if you need:
+- Google Cloud native integration
+- Vertex AI model routing
+- Built-in eval tracing to Cloud Logging
+
+For a **focused NL2SQL agent with grounded eval**, this minimal loop is faster to iterate and easier to audit.
+
+## Project Structure
+
+```
+bq-nl2sql-agent/
+├── nl2sql/
+│   ├── __init__.py
+│   ├── agent.py              # Core agent loop
+│   ├── evaluate.py           # Grounded evaluation harness
+│   ├── guard.py              # SQL validation (sqlglot)
+│   ├── llm.py                # LLM abstraction + auto-provider
+│   ├── prompts.py            # Generation/repair/judge/grader prompts
+│   ├── schema.py             # Base Schema interface (FK joins)
+│   ├── schema_adapters.py    # LocalFileSchema, BigQuerySchema
+│   ├── executor.py           # Base executor interface
+│   ├── executor_duckdb.py    # Local DuckDB executor
+│   ├── executor_bigquery.py  # Production BigQuery executor
+│   ├── examples.py           # Few-shot example bank
+│   ├── cli_local.py          # Local testing CLI
+│   └── report_graph.py       # LangGraph report pipeline
+├── data/                     # Sample CSV files
+├── golden/                   # Evaluation test cases (40 cases)
+├── tests/                    # Unit tests
+├── pyproject.toml
+└── README.md
+```
+
+## Grounded Evaluation Details
+
+The `evaluate.py` harness scores three ways:
+
+1. **Execution Success** — SQL ran without error
+2. **Result Match** — Candidate rows == Reference rows (order-insensitive, normalized)
+3. **Judge Rescue** — LLM judge says "candidate answers question as well as reference" (used only when result match fails)
+
+Primary metric: **Result Match** (deterministic, reproducible).
+
+## Report Quality Evaluation
+
+The `report_graph.py` grader evaluates reports across five dimensions:
+
+1. **Groundedness** (0-1) — Every claim supported by source data
+2. **Faithfulness** (0-1) — No contradictions with source data
+3. **Factual Precision** (0-1) — Numbers match source exactly
+4. **Completeness** (0-1) — Covers totals, trends, outliers, methodology
+5. **Style Adherence** (0-1) — Matches requested format
+
+Decision thresholds:
+- **APPROVE**: overall ≥ 0.85 AND all dimensions ≥ 0.7
+- **REVISE**: overall ≥ 0.6 OR any dimension < 0.7
+- **REJECT**: overall < 0.6 OR factual_precision < 0.5 OR groundedness < 0.5
+
 ## Attribution
 
-This project is a fork of **nl2sql-agent** by **gandhi1994** (original: https://github.com/gandhi1994/nl2sql-agent, 35k+ ⭐).
+This project incorporates code from:
 
-**Original work:** © gandhi1994 (MIT License)  
-**Enhancements:** © [Your Name/Org] (MIT License)
+1. **nl2sql-agent** by gandhiashutosh14 (MIT License)
+   https://github.com/gandhiashutosh14/nl2sql-agent
+   Files: agent.py, guard.py, evaluate.py, schema.py, prompts.py, schema_adapters.py, etc.
+
+2. **ai-job-search** by MadsLorentzen (MIT License)  
+   https://github.com/MadsLorentzen/ai-job-search
+   Patterns: LangGraph report pipeline structure, grader eval loop
+
+Original works licensed under MIT License.  
+Enhancements and integration by Prithvi Monangi (MIT License).
 
 See [NOTICE](NOTICE) for full attribution details.
 
