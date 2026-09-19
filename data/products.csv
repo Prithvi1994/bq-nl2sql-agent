@@ -1,0 +1,11 @@
+product_id,name,category,price
+101,Laptop,Electronics,999.99
+102,Mouse,Electronics,29.99
+103,Keyboard,Electronics,79.99
+104,Monitor,Electronics,299.99
+105,Desk Chair,Furniture,199.00
+106,Standing Desk,Furniture,449.00
+107,Notebook,Stationery,12.99
+108,Pen Set,Stationery,8.99
+109,USB-C Hub,Electronics,39.99
+110,Webcam,Electronics,89.99

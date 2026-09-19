@@ -1,0 +1,16 @@
+This project is a fork of nl2sql-agent by gandhiashutosh14
+Original repository: https://github.com/gandhiashutosh14/nl2sql-agent
+Original author: gandhiashutosh14 (MIT License)
+
+Enhancements by [Your Name/Org]:
+- LangGraph-based report generation pipeline with auto-grader eval loop
+- Automated grader/eval loop (groundedness, faithfulness, factual_precision, completeness, style adherence)
+- Report styles: executive summary, detailed analysis, technical brief, slide deck
+- Comprehensive eval framework (Text-to-SQL + Report Generation)
+- DuckDB local execution + BigQuery production support
+- Auto-grader eval loop replacing human-in-the-loop
+- 32+ new golden test cases covering all question categories
+- Report styles: executive summary, detailed analysis, technical brief, slide deck
+- Comprehensive eval framework (Text-to-SQL + Report Generation)
+
+Licensed under MIT License (see LICENSE).

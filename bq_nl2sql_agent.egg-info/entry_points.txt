@@ -1,0 +1,3 @@
+[console_scripts]
+nl2sql-eval = nl2sql.evaluate:main
+nl2sql-local = nl2sql.cli_local:main

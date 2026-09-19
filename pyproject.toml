@@ -1,0 +1,49 @@
+[project]
+name = "bq-nl2sql-agent"
+version = "0.1.0"
+description = "BigQuery-compatible NL2SQL agent with grounded evaluation, local testing via DuckDB"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "duckdb>=1.0.0",
+    "sqlglot>=25.0.0",
+    "openai>=1.0.0",
+    "pydantic>=2.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+bigquery = [
+    "google-cloud-bigquery>=3.11.0",
+    "google-cloud-bigquery-storage>=2.20.0",
+]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+]
+eval = [
+    "langchain>=0.1.0",
+    "langsmith>=0.1.0",
+]
+
+[project.scripts]
+nl2sql-local = "nl2sql.cli_local:main"
+nl2sql-eval = "nl2sql.evaluate:main"
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["nl2sql*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

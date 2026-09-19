@@ -1,0 +1,9 @@
+customer_id,first_name,last_name,email,country,created_at
+1,John,Doe,john@example.com,USA,2023-01-15
+2,Jane,Smith,jane@example.com,UK,2023-02-20
+3,Bob,Wilson,bob@example.com,Canada,2023-03-10
+4,Alice,Brown,alice@example.com,USA,2023-04-05
+5,Charlie,Davis,charlie@example.com,Germany,2023-05-12
+6,Diana,Miller,diana@example.com,France,2023-06-18
+7,Eve,Garcia,eve@example.com,USA,2023-07-22
+8,Frank,Martinez,frank@example.com,UK,2023-08-30

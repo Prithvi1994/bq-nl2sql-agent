@@ -1,0 +1,195 @@
+Metadata-Version: 2.4
+Name: bq-nl2sql-agent
+Version: 0.1.0
+Summary: BigQuery-compatible NL2SQL agent with grounded evaluation, local testing via DuckDB
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: duckdb>=1.0.0
+Requires-Dist: sqlglot>=25.0.0
+Requires-Dist: openai>=1.0.0
+Requires-Dist: pydantic>=2.0.0
+Requires-Dist: python-dotenv>=1.0.0
+Provides-Extra: bigquery
+Requires-Dist: google-cloud-bigquery>=3.11.0; extra == "bigquery"
+Requires-Dist: google-cloud-bigquery-storage>=2.20.0; extra == "bigquery"
+Provides-Extra: dev
+Requires-Dist: pytest>=7.4.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.21.0; extra == "dev"
+Requires-Dist: black>=23.0.0; extra == "dev"
+Requires-Dist: ruff>=0.1.0; extra == "dev"
+Provides-Extra: eval
+Requires-Dist: langchain>=0.1.0; extra == "eval"
+Requires-Dist: langsmith>=0.1.0; extra == "eval"
+
+# BQ-NL2SQL Agent
+
+BigQuery-compatible Natural Language to SQL agent with **grounded evaluation**, **local testing via DuckDB**, and **production-ready BigQuery backend**.
+
+## Features
+
+- **Schema-grounded**: FK join-path hints, column validation, read-only guard
+- **Bounded repair loop**: Auto-fixes SQL errors (max 3 retries)
+- **Evidence traces**: Every attempt logged with SQL, errors, timing
+- **Grounded evaluation**: Execution success + result match + LLM judge rescue
+- **Local testing**: DuckDB backend queries local CSV/Parquet/JSON files with BigQuery-compatible SQL
+- **Production BigQuery**: Swap executor for `google-cloud-bigquery` with quota guards
+
+## Quick Start (Local Testing)
+
+```bash
+# Clone and install
+git clone <your-fork>
+cd bq-nl2sql-agent
+pip install -e .
+
+# Or just install dependencies
+pip install duckdb sqlglot openai pydantic python-dotenv
+
+# Run a question against the sample data
+python -m nl2sql.cli_local --question "Total revenue by country"
+
+# Or with custom data
+python -m nl2sql.cli_local --question "Top 5 customers" --data-dir ./my_data --model gpt-4o
+```
+
+## Sample Data
+
+The repo includes sample CSV files in `./data/`:
+- `customers.csv` - 8 customers
+- `orders.csv` - 10 orders
+- `products.csv` - 10 products
+- `order_items.csv` - 13 line items
+
+## Example Questions
+
+```bash
+# Aggregations
+python -m nl2sql.cli_local -q "Total revenue by country"
+python -m nl2sql.cli_local -q "Average order value by country"
+
+# Joins
+python -m nl2sql.cli_local -q "Which customer spent the most?"
+python -m nl2sql.cli_local -q "What products were in order 1001?"
+
+# Complex
+python -m nl2sql.cli_local -q "Total revenue by product category"
+python -m nl2sql.cli_local -q "Customers who haven't placed any orders"
+```
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      NL2SQLAgent                             │
+├─────────────────────────────────────────────────────────────┤
+│  Schema (LocalFileSchema | BigQuerySchema)                  │
+│  Guard (sqlglot dialect: sqlite | bigquery)                 │
+│  Executor (DuckDB local | BigQuery remote)                  │
+│  LLM (OpenAI-compatible)                                    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Core Components
+
+| File | Purpose |
+|------|---------|
+| `agent.py` | Main agent loop: generate → guard → execute → repair |
+| `guard.py` | SQL validation via sqlglot (dialect-aware) |
+| `schema_adapters.py` | Schema introspection (local files / BigQuery) |
+| `executor_duckdb.py` | Local execution on CSV/Parquet via DuckDB |
+| `executor_bigquery.py` | Production BigQuery execution (optional) |
+| `evaluate.py` | Grounded eval harness (execution + result match + judge) |
+| `cli_local.py` | Zero-setup local testing CLI |
+
+## Evaluation
+
+```bash
+# Run local evaluation
+python -m nl2sql.evaluate golden/local_test.json --model gpt-4o-mini
+
+# Metrics reported:
+# - Execution success rate
+# - Result match (deterministic row equality)
+# - Judge-rescued cases (LLM says "different but valid")
+# - Accepted rate (match OR judge-rescued)
+# - Repair histogram
+# - Median latency
+```
+
+## BigQuery Production Setup
+
+```bash
+# Install BigQuery extras
+pip install -e ".[bigquery]"
+
+# Set credentials
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/sa.json
+
+# Use BigQuery schema and executor
+from nl2sql.schema_adapters import BigQuerySchema
+from nl2sql.executor_bigquery import run_query_bigquery
+
+schema = BigQuerySchema.from_bigquery(project="my-proj", dataset="my_dataset")
+agent = NL2SQLAgent(..., schema=schema, executor=run_query_bigquery)
+```
+
+## ADK vs LangGraph
+
+**This project uses neither** — it's a lightweight, transparent agent loop (`agent.py`) that you fully own and understand. 
+
+- **No framework lock-in** — ~300 lines of core logic
+- **Easy to extend** — swap LLM, schema, executor, guard independently
+- **Grounded eval built-in** — not an afterthought
+
+Use **LangGraph** if you need:
+- Complex multi-agent orchestration
+- Human-in-the-loop approvals
+- Stateful long-running workflows
+- Visual debugging
+
+Use **ADK (Agent Development Kit)** if you need:
+- Google Cloud native integration
+- Vertex AI model routing
+- Built-in eval tracing to Cloud Logging
+
+For a **focused NL2SQL agent with grounded eval**, this minimal loop is faster to iterate and easier to audit.
+
+## Project Structure
+
+```
+bq-nl2sql-agent/
+├── nl2sql/
+│   ├── __init__.py
+│   ├── agent.py              # Core agent loop
+│   ├── evaluate.py           # Grounded evaluation harness
+│   ├── guard.py              # SQL validation (sqlglot)
+│   ├── llm.py                # LLM abstraction
+│   ├── prompts.py            # Generation/repair/judge prompts
+│   ├── schema.py             # Base Schema interface
+│   ├── schema_adapters.py    # LocalFileSchema, BigQuerySchema
+│   ├── executor.py           # Base executor interface
+│   ├── executor_duckdb.py    # Local DuckDB executor
+│   ├── executor_bigquery.py  # Production BigQuery executor
+│   ├── examples.py           # Few-shot example bank
+│   ├── cli_local.py          # Local testing CLI
+│   └── cli_bigquery.py       # BigQuery CLI (optional)
+├── data/                     # Sample CSV files
+├── golden/                   # Evaluation test cases
+├── tests/                    # Unit tests
+├── pyproject.toml
+└── README.md
+```
+
+## Grounded Evaluation Details
+
+The `evaluate.py` harness scores three ways:
+
+1. **Execution Success** — SQL ran without error
+2. **Result Match** — Candidate rows == Reference rows (order-insensitive, normalized)
+3. **Judge Rescue** — LLM judge says "candidate answers question as well as reference" (used only when result match fails)
+
+Primary metric: **Result Match** (deterministic, reproducible).
+
+## License
+
+MIT
