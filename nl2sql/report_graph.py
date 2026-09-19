@@ -226,7 +226,7 @@ def revise_report_node(state: ReportState) -> ReportState:
         question=state["question"],
         current_report=state["report_draft"],
         feedback=state["review_feedback"],
-        style=state["style"].value,
+        style=state["style"].value if hasattr(state["style"], "value") else state["style"],
     )
     
     reply = llm.complete(messages)
@@ -311,7 +311,7 @@ def review_decision(state: ReportState) -> Literal["finalize", "revise", "handle
     if decision == ReviewDecision.APPROVE:
         return "finalize"
     elif decision == ReviewDecision.REVISE:
-        return "revise_report"
+        return "revise"
     elif decision == ReviewDecision.REJECT:
         return "handle_error"
     return "handle_error"

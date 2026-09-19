@@ -1,3 +1,5 @@
+LICENSE
+NOTICE
 README.md
 pyproject.toml
 bq_nl2sql_agent.egg-info/PKG-INFO
@@ -6,6 +8,16 @@ bq_nl2sql_agent.egg-info/dependency_links.txt
 bq_nl2sql_agent.egg-info/entry_points.txt
 bq_nl2sql_agent.egg-info/requires.txt
 bq_nl2sql_agent.egg-info/top_level.txt
+nl2sql/__init__.py
+nl2sql/agent.py
 nl2sql/cli_local.py
+nl2sql/evaluate.py
+nl2sql/examples.py
+nl2sql/executor.py
 nl2sql/executor_duckdb.py
+nl2sql/guard.py
+nl2sql/llm.py
+nl2sql/prompts.py
+nl2sql/report_graph.py
+nl2sql/schema.py
 nl2sql/schema_adapters.py

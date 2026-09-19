@@ -222,7 +222,7 @@ def create_llm(
     if provider == "openrouter":
         return OpenRouterLLM(
             model=model or "nemotron-3-ultra",
-            api_key=api_key,
+            api_key=api_key or os.environ.get("OPENROUTER_API_KEY"),
             base_url=base_url or "https://openrouter.ai/api/v1",
             temperature=temperature,
             max_tokens=max_tokens,

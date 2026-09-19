@@ -6,6 +6,7 @@ from typing import Dict, List, Optional, Sequence, Literal
 from typing_extensions import TypedDict
 
 from .examples import Example
+from .llm import create_llm
 
 
 SYSTEM = """You are a careful SQLite analyst. You translate a business question into ONE read-only SQL query.
