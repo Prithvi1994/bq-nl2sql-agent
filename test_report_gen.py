@@ -7,6 +7,7 @@ if not api_key:
     print("ERROR: OPENROUTER_API_KEY not set")
     sys.exit(1)
 
+# Use a faster model for report generation
 from nl2sql.report_graph import run_report_generation, ReportStyle
 
 report = run_report_generation(
