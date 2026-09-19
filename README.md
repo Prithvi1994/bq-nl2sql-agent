@@ -121,6 +121,20 @@ python -m nl2sql.cli_local -q "Top customers" --model claude-3-5-sonnet
 python -m nl2sql.cli_local -q "Top customers" --model nemotron-3-ultra
 ```
 
+### **Free Models on OpenRouter** (no API key required for some)
+
+| Short Name | Full Model ID | Best For |
+|------------|---------------|----------|
+| `nemotron-3-ultra` | `nvidia/nemotron-3-ultra-550b-a55b:free` | SQL generation (default) |
+| `nemotron-3.5-lightning` | `nvidia/nemotron-3.5-lightning:free` | Fast reasoning |
+| `deepseek-v4-flash` | `deepseek/deepseek-v4-flash-0731:free` | **Grading/eval** (fast, free) |
+| `inkling` | `thinkingmachines/inkling:free` | Evaluation |
+
+```bash
+python -m nl2sql.cli_local -q "Total revenue by country" --model nemotron-3-ultra
+python -m nl2sql.cli_local -q "Total revenue by country" --model deepseek-v4-flash
+```
+
 ## Using Your Own Data
 
 Place CSV, Parquet, or JSON files in a directory:
@@ -220,6 +234,62 @@ Then run:
 python test_eval.py
 ```
 
+## Report Quality Evaluation (New!)
+
+Evaluate report generation quality using **deepseek-v4-flash** (free, fast) as judge:
+
+```bash
+# Run report quality evaluation
+python eval_reports.py --golden golden/reports.json --verbose
+
+# Output to file
+python eval_reports.py --golden golden/reports.json --output eval_results.json
+```
+
+**What it evaluates:**
+- **Groundedness** — Every claim supported by source data
+- **Faithfulness** — No contradictions with source data
+- **Factual Precision** — Numbers match source exactly
+- **Completeness** — Covers totals, trends, outliers, methodology
+- **Style Adherence** — Matches requested format
+
+**Expected output:**
+```
+Evaluating 5 cases with deepseek-v4-flash judge...
+------------------------------------------------------------
+  [report-1] approve (score: 0.95) - 8.2s
+  [report-2] approve (score: 0.92) - 7.1s
+  ...
+
+============================================================
+EVALUATION SUMMARY
+============================================================
+Total cases:      5
+Approved:         4
+Revised:          1
+Rejected:         0
+Errors:           0
+Avg score:        0.91
+Total time:       42.3s
+============================================================
+```
+
+### Golden Report Test Cases
+
+Add test cases to `golden/reports.json`:
+
+```json
+[
+  {
+    "id": "report-1",
+    "question": "Total revenue by country",
+    "sql": "SELECT c.country, SUM(o.total_amount) as revenue FROM customers c JOIN orders o ON c.customer_id = o.customer_id WHERE o.status = 'completed' GROUP BY c.country ORDER BY revenue DESC",
+    "style": "executive_summary",
+    "tags": ["aggregation", "join", "group_by"]
+  }
+]
+```
+
 ## Report Generation Pipeline
 
 The project includes a **LangGraph-based report generation pipeline** with auto-grader eval loop:
@@ -261,6 +331,9 @@ The grader replaces human-in-the-loop with automated evaluation:
 ```
 generate_report → auto_grader → [APPROVE → finalize | REVISE → revise_report → auto_grader (loop) | REJECT → handle_error]
 ```
+
+**Local runs:** Auto-approves to avoid multiple LLM calls/timeouts  
+**Production:** Set `enable_human_review=True` or use `grade_report()` directly for full evaluation
 
 ## Production: BigQuery Backend
 
@@ -333,6 +406,21 @@ Use **ADK (Agent Development Kit)** if you need:
 
 For a **focused NL2SQL agent with grounded eval**, this minimal loop is faster to iterate and easier to audit.
 
+## Production Readiness Checklist
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| **Core SQL agent** | ✅ Production-ready | Tested, grounded, bounded repair |
+| **DuckDB executor** | ✅ Production-ready | Local testing, CI/CD |
+| **BigQuery executor** | ✅ Available | Requires `.[bigquery]` extras + GCP credentials |
+| **SQL guard (sqlglot)** | ✅ Production-ready | Dialect-aware, injection prevention |
+| **Schema introspection** | ✅ Production-ready | FK join paths, column types |
+| **Eval harness** | ✅ Production-ready | Execution + Result Match + Judge |
+| **Report pipeline** | ⚠️ Beta | Auto-approve for local; full grader for CI |
+| **Report grader** | ✅ Working | deepseek-v4-flash (free, fast) |
+| **Batch report eval** | ✅ Available | `eval_reports.py` |
+| **CI/CD integration** | ⚠️ Add GitHub Actions | Template in `.github/workflows/` |
+
 ## Project Structure
 
 ```
@@ -353,10 +441,13 @@ bq-nl2sql-agent/
 │   ├── cli_local.py          # Local testing CLI
 │   └── report_graph.py       # LangGraph report pipeline
 ├── data/                     # Sample CSV files
-├── golden/                   # Evaluation test cases (40 cases)
+├── golden/                   # Evaluation test cases (40 SQL + 5 report)
 ├── tests/                    # Unit tests
+├── eval_reports.py           # Report quality batch evaluation
 ├── pyproject.toml
-└── README.md
+├── README.md
+├── LICENSE
+└── NOTICE
 ```
 
 ## Grounded Evaluation Details
