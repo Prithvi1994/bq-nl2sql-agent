@@ -2,7 +2,6 @@
 import os
 import sys
 
-# Ensure OPENROUTER_API_KEY is set
 api_key = os.environ.get("OPENROUTER_API_KEY")
 if not api_key:
     print("ERROR: OPENROUTER_API_KEY not set")
