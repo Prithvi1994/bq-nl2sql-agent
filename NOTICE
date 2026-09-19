@@ -1,16 +1,12 @@
-This project is a fork of nl2sql-agent by gandhiashutosh14
-Original repository: https://github.com/gandhiashutosh14/nl2sql-agent
-Original author: gandhiashutosh14 (MIT License)
+This project incorporates code from:
 
-Enhancements by [Your Name/Org]:
-- LangGraph-based report generation pipeline with auto-grader eval loop
-- Automated grader/eval loop (groundedness, faithfulness, factual_precision, completeness, style adherence)
-- Report styles: executive summary, detailed analysis, technical brief, slide deck
-- Comprehensive eval framework (Text-to-SQL + Report Generation)
-- DuckDB local execution + BigQuery production support
-- Auto-grader eval loop replacing human-in-the-loop
-- 32+ new golden test cases covering all question categories
-- Report styles: executive summary, detailed analysis, technical brief, slide deck
-- Comprehensive eval framework (Text-to-SQL + Report Generation)
+1. nl2sql-agent by gandhiashutosh14 (MIT License)
+   https://github.com/gandhiashutosh14/nl2sql-agent
+   Files: agent.py, guard.py, evaluate.py, schema.py, prompts.py, schema_adapters.py, etc.
 
-Licensed under MIT License (see LICENSE).
+2. ai-job-search by MadsLorentzen (MIT License)
+   https://github.com/MadsLorentzen/ai-job-search
+   Patterns: LangGraph report pipeline structure, grader eval loop
+
+Original works licensed under MIT License.
+Enhancements and integration by Prithvi Monangi (MIT License).
