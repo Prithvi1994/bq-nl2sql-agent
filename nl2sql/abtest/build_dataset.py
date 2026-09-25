@@ -161,7 +161,10 @@ EXPERIMENTS: List[ExperimentSpec] = [
         intended_shares={"control": 0.50, "treatment_b": 0.50},
         variants=[
             VariantSpec("control", 0.40),
-            VariantSpec("treatment_b", 0.60, 0.14, 0.12, 0.00, 0.09, 0.08),
+            # +9% sessions and +8% active days, not zero: the email drives return
+            # visits. sessions_per_user is derived from days_active, so setting only
+            # the active lift is enough, but both are declared for clarity.
+            VariantSpec("treatment_b", 0.60, 0.14, 0.12, 0.09, 0.08, 0.08),
         ],
         n_users=30000,
         n_days=35,
@@ -473,6 +476,11 @@ VIEWS = [
      "COALESCE(t.purchases, 0) AS purchases, COALESCE(t.revenue_usd, 0.0) AS revenue_usd "
      "FROM fact_user_assignments a "
      "LEFT JOIN fact_test_phase_user_totals t USING (user_id, experiment_id)"),
+    ("fact_daily_assigned",
+     "SELECT m.metric_date, m.user_id, m.experiment_id, a.variant, a.country, a.platform, "
+     "m.phase, m.sessions, m.pageviews, m.add_to_cart, m.purchases, m.revenue_usd, "
+     "m.session_duration_s "
+     "FROM fact_daily_user_metrics m JOIN fact_user_assignments a USING (user_id, experiment_id)"),
     ("fact_assigned_with_pre",
      "SELECT a.user_id, a.experiment_id, a.variant, a.country, a.platform, "
      "COALESCE(t.days_active, 0) AS days_active, COALESCE(t.sessions, 0) AS sessions, "

@@ -1,0 +1,136 @@
+{
+  "description": "Business questions with known-correct answers. The expected values are derived from ground truth, not from a previous run of the agent, so these can fail.",
+  "db": "./abtest_data/abtest.duckdb",
+  "default_end": "2026-03-01",
+  "cases": [
+    {
+      "id": "best-revenue-checkout",
+      "question": "which variant had the highest revenue lift in checkout_flow_v2 over the last 56 days",
+      "intent": "best_variant",
+      "experiment_id": "checkout_flow_v2",
+      "metric": "revenue_per_user",
+      "expect_winner": "treatment_b",
+      "expect_winner_significant": true,
+      "expect_true_lift_within_pp": 12.0,
+      "notes": "Truth: treatment_b revenue lift +25.35%. Guardrail trap: treatment_c passes conversion but fails revenue."
+    },
+    {
+      "id": "best-revenue-checkout-30d",
+      "question": "which variant had the highest revenue lift in checkout_flow_v2 over the last 30 days",
+      "intent": "best_variant",
+      "experiment_id": "checkout_flow_v2",
+      "metric": "revenue_per_user",
+      "expect_winner": "treatment_b",
+      "expect_true_lift_within_pp": 15.0,
+      "notes": "Shorter window, same winner. Tests that the date parser is not just grabbing everything."
+    },
+    {
+      "id": "null-effect-no-ship",
+      "question": "which variant had the highest purchase rate lift in pricing_page_copy_v3 over the last 42 days",
+      "intent": "best_variant",
+      "experiment_id": "pricing_page_copy_v3",
+      "metric": "purchase_rate",
+      "expect_winner": null,
+      "expect_no_reliable_winner": true,
+      "notes": "True effect is exactly zero. A readout that claims a winner here is wrong."
+    },
+    {
+      "id": "srm-blocks-decision",
+      "question": "which variant had the highest purchase rate lift in onboarding_email_v1 over the last 35 days",
+      "intent": "best_variant",
+      "experiment_id": "onboarding_email_v1",
+      "metric": "purchase_rate",
+      "expect_winner": null,
+      "expect_srm_detected": true,
+      "expect_srm_in_answer": true,
+      "notes": "Real +14% effect, but assignment was 60/40. SRM must be surfaced in the answer text."
+    },
+    {
+      "id": "srm-explicit",
+      "question": "was there a sample ratio mismatch in onboarding_email_v1",
+      "intent": "srm",
+      "experiment_id": "onboarding_email_v1",
+      "expect_srm_detected": true,
+      "notes": "Direct SRM question. Truth: 60/40 observed vs 50/50 intended."
+    },
+    {
+      "id": "srm-clean-checkout",
+      "question": "is the variant split balanced in checkout_flow_v2",
+      "intent": "srm",
+      "experiment_id": "checkout_flow_v2",
+      "expect_srm_detected": false,
+      "notes": "checkout_flow_v2 has no SRM. Must not cry wolf."
+    },
+    {
+      "id": "daily-trend",
+      "question": "show me the daily revenue trend per variant for checkout_flow_v2 over the last 56 days",
+      "intent": "daily_trend",
+      "experiment_id": "checkout_flow_v2",
+      "metric": "revenue_per_user",
+      "expect_days": 56,
+      "expect_variants": 3,
+      "notes": "Trend shape. Revenue per user is flat-ish over a test window; the point is 56 days x 3 variants."
+    },
+    {
+      "id": "cohort-country",
+      "question": "purchase rate by country in checkout_flow_v2 over the last 56 days",
+      "intent": "cohort",
+      "experiment_id": "checkout_flow_v2",
+      "metric": "purchase_rate",
+      "expect_dimension": "country",
+      "expect_min_segments": 6,
+      "notes": "7 countries in the data. Segment breakdown must come from a query, not a guess."
+    },
+    {
+      "id": "cohort-platform",
+      "question": "revenue per user by device for pricing_page_copy_v3 over the last 42 days",
+      "intent": "cohort",
+      "experiment_id": "pricing_page_copy_v3",
+      "metric": "revenue_per_user",
+      "expect_dimension": "platform",
+      "expect_min_segments": 3,
+      "notes": "'device' must resolve to the platform column."
+    },
+    {
+      "id": "sessions-lift",
+      "question": "which variant had the highest sessions per user lift in onboarding_email_v1 over the last 35 days",
+      "intent": "best_variant",
+      "experiment_id": "onboarding_email_v1",
+      "metric": "sessions_per_user",
+      "expect_winner": null,
+      "expect_srm_detected": true,
+      "expect_true_lift_within_pp": 8.0,
+      "expect_lift_variant": "treatment_b",
+      "notes": "Truth is +9% sessions, a real effect, but this experiment has a 60/40 SRM. Correct behaviour is to surface the effect and refuse to name a winner."
+    },
+    {
+      "id": "aov-treatment-c",
+      "question": "what is the average order value lift for treatment_c in checkout_flow_v2 over the last 56 days",
+      "intent": "compare",
+      "experiment_id": "checkout_flow_v2",
+      "metric": "revenue_per_purchaser",
+      "expect_winner": null,
+      "expect_focus_variant": "treatment_c",
+      "expect_true_lift_within_pp": 8.0,
+      "expect_lift_variant": "treatment_c",
+      "notes": "treatment_c AOV truth is -14%, so this must report a REGRESSION, not name a winner. AOV is measured over purchasers only."
+    },
+    {
+      "id": "duration-mde",
+      "question": "how long do we need to run checkout_flow_v2 to detect a 5% lift",
+      "intent": "duration",
+      "experiment_id": "checkout_flow_v2",
+      "expect_n_per_arm_positive": true,
+      "notes": "Sample-size math from the catalog. No query needed; the answer is a formula."
+    },
+    {
+      "id": "duration-mde-10",
+      "question": "how long do we need to run checkout_flow_v2 to detect a 10% lift",
+      "intent": "duration",
+      "experiment_id": "checkout_flow_v2",
+      "expect_n_per_arm_positive": true,
+      "expect_n_per_arm_greater_than_case": "duration-mde",
+      "notes": "A 10% MDE needs a bigger sample than a 5% MDE. Monotonicity check."
+    }
+  ]
+}
