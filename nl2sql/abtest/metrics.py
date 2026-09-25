@@ -51,6 +51,99 @@ class MetricDef:
             raise KeyError(f"metric {self.name!r} has no SQL for unit {u!r}")
         return self.sql[u]
 
+    def window_expression(self) -> str:
+        """The metric summed over the joined window rows, per user.
+
+        Used in the one query that joins assigned_population to experiment_window.
+        The join produces one row per user-day, so the per-user total is SUM over
+        those rows. Binary metrics sum their 0/1 indicator, which is how a
+        "purchased at least once" flag is recovered from a daily grain.
+        """
+        col = {
+            "purchase_rate": "CASE WHEN w.purchases > 0 THEN 1.0 ELSE 0.0 END",
+            "add_to_cart_rate": "CASE WHEN w.add_to_cart > 0 THEN 1.0 ELSE 0.0 END",
+            "revenue_per_user": "w.revenue_usd",
+            "revenue_per_purchaser": "w.revenue_usd",
+            "sessions_per_user": "w.sessions",
+            "pageviews_per_user": "w.pageviews",
+            "days_active": "1.0",
+            "session_duration_s": "w.session_duration_s",
+        }.get(self.name)
+        if col is None:
+            raise KeyError(
+                f"no window expression for metric {self.name!r}; add it so a windowed "
+                "lift cannot be silently computed over the wrong column"
+            )
+        return f"SUM({col})"
+
+    def daily_expression(self) -> str:
+        """The metric over ONE user-day row of experiment_daily.
+
+        This is a per-active-user value for a single day, not a rate over a
+        population, so it must not divide by any user count: experiment_daily only
+        has a row for users who were active that day, so "users" here is the active
+        population and the caller is asking for a daily trend, not a rate.
+        """
+        col = {
+            "purchase_rate": "CASE WHEN purchases > 0 THEN 1.0 ELSE 0.0 END",
+            "add_to_cart_rate": "CASE WHEN add_to_cart > 0 THEN 1.0 ELSE 0.0 END",
+            "revenue_per_user": "revenue_usd",
+            "revenue_per_purchaser": (
+                "CASE WHEN purchases > 0 THEN revenue_usd / purchases ELSE NULL END"
+            ),
+            "sessions_per_user": "sessions",
+            "pageviews_per_user": "pageviews",
+            "days_active": "1.0",
+            "session_duration_s": "session_duration_s",
+        }.get(self.name)
+        if col is None:
+            raise KeyError(
+                f"no daily expression for metric {self.name!r}; add it so a trend "
+                "cannot be silently computed over the wrong population"
+            )
+        return f"AVG({col})"
+
+    def segment_expression(self) -> str:
+        """How to roll the metric up over a segment of assigned users.
+
+        experiment_user holds one row per assignment with metrics already
+        pre-aggregated, so a segment breakdown is just AVG of the raw column. It
+        must NOT be AVG of `expression("user")`: that expression is itself an
+        aggregate (SUM or MAX) because it is meant to be evaluated per user, and
+        nesting an aggregate inside AVG fails to plan.
+
+        The measure that the segment rolls up is therefore chosen here, by metric
+        shape, rather than derived from the per-user expression:
+
+          * binary metrics   -> AVG of the 0/1 indicator
+          * "sum" metrics    -> AVG of the raw column (already per-user total)
+          * "max" metrics    -> AVG of the raw column (already per-user count)
+
+        For a sum-metric the per-user total and the segment mean are the same
+        number averaged over users, which is what "revenue per user by country"
+        means. For AOV the population filter (`purchasers`) still applies, so the
+        average is taken only over users who bought.
+        """
+        col = {
+            "purchase_rate": "CASE WHEN purchases > 0 THEN 1.0 ELSE 0.0 END",
+            "add_to_cart_rate": "CASE WHEN add_to_cart > 0 THEN 1.0 ELSE 0.0 END",
+            "revenue_per_user": "revenue_usd",
+            "revenue_per_purchaser": (
+                "CASE WHEN purchases > 0 THEN revenue_usd / purchases ELSE NULL END"
+            ),
+            "sessions_per_user": "sessions",
+            "pageviews_per_user": "pageviews",
+            "days_active": "days_active",
+            "session_duration_s": "session_duration_s",
+        }.get(self.name)
+        if col is None:
+            raise KeyError(
+                f"no segment expression for metric {self.name!r}; add it to "
+                "MetricDef.segment_expression so a segment breakdown cannot be "
+                "silently wrong"
+            )
+        return f"AVG({col})"
+
     def per_user(self, rows: Sequence[Sequence[Any]], col: int) -> np.ndarray:
         """Reduce a per-row column to a per-user value using this metric's aggregation."""
         vals = np.asarray(
@@ -71,9 +164,10 @@ METRICS: List[MetricDef] = [
         unit="user",
         description="Share of assigned users who made at least one purchase during the window.",
         sql={
-            "user": "MAX(IF(purchases > 0, 1, 0))",
-            "event": "IF(purchases > 0, 1, 0)",
-            "day": "IF(SUM(purchases) > 0, 1, 0)",
+            "user": "MAX(CASE WHEN purchases > 0 THEN 1 ELSE 0 END)",
+            "pre": "CASE WHEN p.pre_purchases > 0 THEN 1 ELSE 0 END",
+            "event": "CASE WHEN purchases > 0 THEN 1 ELSE 0 END",
+            "day": "CASE WHEN SUM(purchases) > 0 THEN 1 ELSE 0 END",
         },
         agg="max",
         keywords=["conversion", "purchase rate", "convert", "buyers", "purchased",
@@ -86,9 +180,10 @@ METRICS: List[MetricDef] = [
         unit="user",
         description="Share of assigned users who added something to the cart.",
         sql={
-            "user": "MAX(IF(add_to_cart > 0, 1, 0))",
-            "event": "IF(add_to_cart > 0, 1, 0)",
-            "day": "IF(SUM(add_to_cart) > 0, 1, 0)",
+            "user": "MAX(CASE WHEN add_to_cart > 0 THEN 1 ELSE 0 END)",
+            "pre": "CASE WHEN p.pre_add_to_cart > 0 THEN 1 ELSE 0 END",
+            "event": "CASE WHEN add_to_cart > 0 THEN 1 ELSE 0 END",
+            "day": "CASE WHEN SUM(add_to_cart) > 0 THEN 1 ELSE 0 END",
         },
         agg="max",
         keywords=["cart", "add to cart", "basket", "cart adds"],
@@ -101,6 +196,7 @@ METRICS: List[MetricDef] = [
         description="Total revenue in USD divided by assigned users, including users who spent nothing.",
         sql={
             "user": "SUM(revenue_usd)",
+            "pre": "p.pre_revenue",
             "event": "revenue_usd",
             "day": "SUM(revenue_usd)",
         },
@@ -114,9 +210,10 @@ METRICS: List[MetricDef] = [
         unit="user",
         description="Average order value: revenue divided by the number of users who purchased.",
         sql={
-            "user": "IF(SUM(purchases) > 0, SUM(revenue_usd) / SUM(purchases), NULL)",
+            "user": "CASE WHEN SUM(purchases) > 0 THEN SUM(revenue_usd) / SUM(purchases) ELSE NULL END",
+            "pre": "CASE WHEN p.pre_purchases > 0 THEN p.pre_revenue / p.pre_purchases ELSE NULL END",
             "event": "revenue_usd",
-            "day": "IF(SUM(purchases) > 0, SUM(revenue_usd) / SUM(purchases), NULL)",
+            "day": "CASE WHEN SUM(purchases) > 0 THEN SUM(revenue_usd) / SUM(purchases) ELSE NULL END",
         },
         agg="mean",
         keywords=["aov", "average order value", "order value", "basket size", "ticket"],
@@ -127,7 +224,8 @@ METRICS: List[MetricDef] = [
         name="sessions_per_user",
         unit="user",
         description="Sessions per assigned user, including users with no sessions.",
-        sql={"user": "SUM(sessions)", "event": "sessions", "day": "SUM(sessions)"},
+        sql={"user": "SUM(sessions)",
+            "pre": "p.pre_sessions", "event": "sessions", "day": "SUM(sessions)"},
         agg="sum",
         keywords=["sessions", "engagement", "visits", "frequency", "activity",
                   "sessions per user"],
@@ -137,7 +235,8 @@ METRICS: List[MetricDef] = [
         name="pageviews_per_user",
         unit="user",
         description="Pageviews per assigned user.",
-        sql={"user": "SUM(pageviews)", "event": "pageviews", "day": "SUM(pageviews)"},
+        sql={"user": "SUM(pageviews)",
+            "pre": "p.pre_pageviews", "event": "pageviews", "day": "SUM(pageviews)"},
         agg="sum",
         keywords=["pageviews", "views", "browsing", "pages"],
         category="engagement",
@@ -146,7 +245,8 @@ METRICS: List[MetricDef] = [
         name="days_active",
         unit="user",
         description="Distinct days the user was active in the window.",
-        sql={"user": "COUNT(DISTINCT metric_date)", "event": "1", "day": "1"},
+        sql={"user": "COUNT(DISTINCT metric_date)",
+            "pre": "p.pre_days", "event": "1", "day": "1"},
         agg="max",
         keywords=["days active", "retention", "active days", "frequency",
                   "engagement days", "dau"],
@@ -156,7 +256,8 @@ METRICS: List[MetricDef] = [
         name="session_duration_s",
         unit="user",
         description="Total session duration in seconds per assigned user.",
-        sql={"user": "SUM(session_duration_s)", "event": "session_duration_s",
+        sql={"user": "SUM(session_duration_s)",
+            "pre": "p.pre_session_duration_s", "event": "session_duration_s",
              "day": "SUM(session_duration_s)"},
         agg="sum",
         keywords=["duration", "time on site", "session length", "engagement time", "seconds"],
@@ -355,9 +456,9 @@ def lift_analysis(
     if expected_shares:
         srm = check_srm(observed, expected_shares).to_dict()
 
-    ctrl = by_variant[control]
-    y_c = np.asarray([float(r[3]) for r in ctrl], dtype=float)
-    n_c = y_c.size
+    # Control values are built in the lift loop below, after the population filter is
+    # applied. Building them here as well would crash on NULL metric values and would
+    # use an unfiltered population.
 
     out: Dict[str, Any] = {
         "metric": metric.name,
@@ -369,16 +470,33 @@ def lift_analysis(
     }
 
     for name, rs in sorted(by_variant.items()):
-        y = np.asarray([float(r[3]) for r in rs], dtype=float)
+        # A NULL metric_value means "this user is not in the metric's population" —
+        # for AOV, a non-purchaser. Those users are dropped from the average, not
+        # counted as zero, because averaging AOV with zeros inserted is exactly how
+        # AOV silently becomes revenue per user. This is a different rule from the
+        # CUPED covariate, where NULL does mean zero.
+        y = np.asarray(
+            [float(r[3]) for r in rs if r[3] is not None], dtype=float
+        )
+        n_assigned = len(rs)
         out["variant_values"][name] = {
             "users": int(y.size),
-            "share": y.size / max(sum(observed.values()), 1),
+            "assigned_users": int(n_assigned),
+            "share": n_assigned / max(sum(observed.values()), 1),
             "metric_per_user": float(y.mean()) if y.size else float("nan"),
         }
+
+    # Users outside the metric's population are excluded from every arm, not just the
+    # one being reported, so both sides of the comparison share a population.
+    in_pop = {name: [r for r in rs if r[3] is not None] for name, rs in by_variant.items()}
+    ctrl = in_pop[control]
+    y_c = np.asarray([float(r[3]) for r in ctrl], dtype=float)
+    n_c = y_c.size
 
     for name, rs in sorted(by_variant.items()):
         if name == control:
             continue
+        rs = in_pop[name]
         y_t = np.asarray([float(r[3]) for r in rs], dtype=float)
         n_t = y_t.size
 

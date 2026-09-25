@@ -29,6 +29,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from . import metrics as M
+from . import wren_engine
 from .stats import EPS, check_srm
 from ..bq_exec import BigQueryResult, BQScriptError, run_bq_query
 
@@ -56,6 +57,29 @@ class QueryLog:
                 "error": result.error,
                 "sql": result.dialect_sql,
                 "duckdb_sql": result.duckdb_sql,
+            }
+        )
+
+    def add_semantic(self, label: str, plan: Dict[str, Any], row_count: int) -> None:
+        """Log a query that went through Wren, recording both the intent and the plan.
+
+        Both are kept: the intent SQL is what the caller asked for, and the planned
+        SQL is what actually ran. Divergence between them is the whole point of a
+        semantic layer, so a log that shows only one of the two cannot prove what
+        happened.
+        """
+        self.entries.append(
+            {
+                "label": label,
+                "ok": True,
+                "row_count": row_count,
+                "elapsed_ms": plan.get("plan_ms", 0),
+                "error": None,
+                "sql": plan.get("sql", ""),
+                "planned_sql": plan.get("planned_sql", ""),
+                "semantic_layer": "wren",
+                "models": plan.get("models", []),
+                "measures": plan.get("measures", []),
             }
         )
 
@@ -347,6 +371,12 @@ def parse_question(
 # ---------------------------------------------------------------------------
 
 def _run(sql: str, db_path: str, log: QueryLog, label: str, row_limit: int = 500_000) -> List[Sequence[Any]]:
+    """Plan through the semantic layer, then execute.
+
+    Every query on this path goes through Wren's MDL. A query that references no
+    model passes through unchanged, so the legacy BigQuery templates in
+    `metrics.py` still work; anything naming an MDL model gets expanded by Wren.
+    """
     res = run_bq_query(sql, db_path, row_limit=row_limit)
     log.add(label, res)
     if not res.ok:
@@ -354,57 +384,73 @@ def _run(sql: str, db_path: str, log: QueryLog, label: str, row_limit: int = 500
     return res.rows
 
 
-def _user_rows(plan: QueryPlan, db_path: str, log: QueryLog) -> List[Sequence[Any]]:
-    """The canonical per-assigned-user query for this plan.
+def _run_semantic(sql: str, db_path: str, log: QueryLog, label: str,
+                  row_limit: int = 500_000) -> List[Sequence[Any]]:
+    """Plan through Wren's MDL, then execute. The only path that should be used."""
+    try:
+        out = wren_engine.run(sql, db_path, row_limit=row_limit)
+    except wren_engine.WrenError as exc:
+        raise QuestionError(f"semantic layer rejected the query ({label}): {exc}") from exc
+    log.add_semantic(label, out["plan"], out["row_count"])
+    return out["rows"]
 
-    Scope is `fact_user_assignments` LEFT JOIN metrics, so the denominator is every
-    assigned user. Scoping to the metrics table instead would drop users with no
-    activity, which selects on the outcome and inflates lift.
+
+def _user_rows(plan: QueryPlan, db_path: str, log: QueryLog) -> List[Sequence[Any]]:
+    """The canonical per-assigned-user query for this plan, planned by Wren.
+
+    `experiment_user` is one row per assignment with metrics zero-filled, so this
+    query needs no join and cannot accidentally scope to active users. The
+    denominator is correct by construction rather than by remembering a LEFT JOIN.
+
+    AOV is the one metric whose population is not the assignment: it is only defined
+    over users who purchased, so those users are filtered out here. The MDL measure
+    `revenue_per_purchaser` already divides by purchase events; this WHERE clause is
+    what keeps non-purchasers out of the per-user average.
     """
-    # AOV is only defined over users who purchased. Measuring it over all assigned
-    # users would divide by zero and collapse it into revenue per user.
+    # AOV is only defined over users who purchased. The predicate goes in the JOIN
+    # condition so that a non-purchaser still contributes a row (with a NULL metric)
+    # rather than vanishing from the population and shrinking the control arm.
     restrict = ""
     if plan.metric.population == "purchasers":
-        restrict = "\n    HAVING SUM(purchases) > 0"
+        restrict = "\n AND w.purchases > 0"
 
-    sql = """
-DECLARE __exp_id STRING DEFAULT '{experiment_id}';
-DECLARE __start DATE DEFAULT DATE('{start}');
-DECLARE __end DATE DEFAULT DATE('{end}');
-
-WITH by_phase AS (
-  SELECT
-    user_id,
-    phase,
-    {expr} AS metric_value
-  FROM `{{project}}.{{experiment_id}}.fact_daily_assigned`
-  WHERE experiment_id = __exp_id
-    AND (
-      (phase = 'test' AND metric_date BETWEEN __start AND __end)
-      OR phase = 'pre'
-    )
-  GROUP BY user_id, phase{restrict}
-)
+    # Column order is a contract with `metrics.lift_analysis`, which reads index 2 as
+    # variant and index 3 as the metric value. Do not reorder without changing it.
+    #
+    # The explicit GROUP BY is required, not decorative: Wren's planner rejects a
+    # SELECT that mixes an aggregate with ungrouped columns. experiment_user is
+    # already one row per user, so grouping by the key columns is a no-op that costs
+    # nothing and keeps the query legal.
+    # This is the one query where a join is genuinely required, and its shape is the
+    # whole population rule in one place:
+    #
+    #   assigned_population LEFT JOIN experiment_window
+    #
+    # The date filter lives in the JOIN condition, not the WHERE, so a user with no
+    # activity inside the window still produces a row with metric_value 0 instead of
+    # being filtered out. Putting the filter in the WHERE would silently turn this
+    # back into an active-user denominator.
+    #
+    # experiment_user cannot serve here: it is pre-aggregated over the whole test
+    # phase and has no metric_date, so it cannot honour a requested window.
+    pre_expr = plan.metric.expression('pre')
+    sql = f"""
 SELECT
-  a.user_id,
-  a.experiment_id,
-  a.variant,
-  COALESCE(SUM(IF(t.phase = 'test', t.metric_value, 0.0)), 0.0) AS metric_value,
-  COALESCE(SUM(IF(t.phase = 'pre', t.metric_value, 0.0)), 0.0) AS pre_metric_value
-FROM `{{project}}.{{experiment_id}}.fact_user_assignments` AS a
-LEFT JOIN by_phase AS t USING (user_id)
-WHERE a.experiment_id = __exp_id
-GROUP BY a.user_id, a.experiment_id, a.variant
-ORDER BY a.user_id
-""".format(
-        project=PROJECT,
-        experiment_id=plan.experiment_id,
-        start=plan.start.isoformat(),
-        end=plan.end.isoformat(),
-        expr=plan.metric.expression("user"),
-        restrict=restrict,
-    )
-    return _run(sql, db_path, log, f"per-user {plan.metric.name} (scope = assignments)")
+  p.user_id,
+  p.experiment_id,
+  p.variant,
+  {plan.metric.window_expression()} AS metric_value,
+  {pre_expr} AS pre_metric_value
+FROM assigned_population AS p
+LEFT JOIN experiment_window AS w
+  ON w.user_id = p.user_id
+ AND w.experiment_id = p.experiment_id
+ AND w.metric_date BETWEEN '{plan.start.isoformat()}' AND '{plan.end.isoformat()}'{restrict}
+WHERE p.experiment_id = '{plan.experiment_id}'
+GROUP BY p.user_id, p.experiment_id, p.variant, {pre_expr}
+ORDER BY p.user_id
+"""
+    return _run_semantic(sql, db_path, log, f"per-user {plan.metric.name} (MDL experiment_user)")
 
 
 def _answer_lift(plan: QueryPlan, db_path: str, meta: Dict[str, Any], log: QueryLog) -> Dict[str, Any]:
@@ -511,12 +557,21 @@ def _answer_lift(plan: QueryPlan, db_path: str, meta: Dict[str, Any], log: Query
 
 def _answer_cohort(plan: QueryPlan, db_path: str, log: QueryLog) -> Dict[str, Any]:
     dim = plan.dimension or "country"
-    sql = M.BQ_SQL_SEGMENT.format(
-        experiment_id=plan.experiment_id,
-        start=plan.start.isoformat(), end=plan.end.isoformat(),
-        dimension=dim, expr=plan.metric.expression("user"),
-    )
-    rows = _run(sql, db_path, log, f"{plan.metric.name} by {dim}")
+    # Planned by Wren against the MDL. experiment_user is already the assigned-user
+    # grain with pre-aggregated metrics, so a segment breakdown needs no join and no
+    # window clause -- the window was applied when the view was built.
+    sql = f"""
+SELECT
+  {dim} AS segment_value,
+  variant,
+  COUNT(*) AS assigned_users,
+  {plan.metric.segment_expression()} AS metric_per_user
+FROM experiment_user
+WHERE experiment_id = '{plan.experiment_id}'
+GROUP BY {dim}, variant
+ORDER BY {dim}, variant
+"""
+    rows = _run_semantic(sql, db_path, log, f"{plan.metric.name} by {dim}")
 
     segs: Dict[str, Dict[str, float]] = {}
     for dim_value, variant, _users, value in rows:
@@ -542,12 +597,24 @@ def _answer_cohort(plan: QueryPlan, db_path: str, log: QueryLog) -> Dict[str, An
 
 
 def _answer_trend(plan: QueryPlan, db_path: str, log: QueryLog) -> Dict[str, Any]:
-    sql = M.BQ_SQL_DAILY_TREND.format(
-        experiment_id=plan.experiment_id,
-        start=plan.start.isoformat(), end=plan.end.isoformat(),
-        expr=plan.metric.expression("day"),
-    )
-    rows = _run(sql, db_path, log, f"daily {plan.metric.name} by variant")
+    # A trend is the one question that must reach the daily grain: experiment_user is
+    # pre-aggregated per user and cannot answer "how did week 1 differ from week 8".
+    # This is exactly what experiment_daily is for, and it is why that model exists
+    # alongside experiment_user.
+    sql = f"""
+SELECT
+  metric_date,
+  variant,
+  COUNT(DISTINCT user_id) AS active_users,
+  {plan.metric.daily_expression()} AS metric_value
+FROM experiment_daily
+WHERE experiment_id = '{plan.experiment_id}'
+  AND phase = 'test'
+  AND metric_date BETWEEN '{plan.start.isoformat()}' AND '{plan.end.isoformat()}'
+GROUP BY metric_date, variant
+ORDER BY metric_date, variant
+"""
+    rows = _run_semantic(sql, db_path, log, f"daily {plan.metric.name} by variant")
 
     by_variant: Dict[str, List[Tuple[str, float]]] = {}
     for d, variant, _active, value in rows:
@@ -575,8 +642,19 @@ def _answer_trend(plan: QueryPlan, db_path: str, log: QueryLog) -> Dict[str, Any
 
 
 def _answer_srm(plan: QueryPlan, db_path: str, meta: Dict[str, Any], log: QueryLog) -> Dict[str, Any]:
-    sql = M.BQ_SQL_ASSIGNMENT.format(experiment_id=plan.experiment_id)
-    rows = _run(sql, db_path, log, "variant assignment counts")
+    # SRM is a property of the assignment table alone, so it reads the
+    # assigned_population model directly: no metric, no join, no window.
+    sql = f"""
+SELECT
+  variant,
+  COUNT(*) AS users,
+  SAFE_DIVIDE(COUNT(*), SUM(COUNT(*)) OVER ()) AS share
+FROM assigned_population
+WHERE experiment_id = '{plan.experiment_id}'
+GROUP BY variant
+ORDER BY variant
+"""
+    rows = _run_semantic(sql, db_path, log, "variant assignment counts (MDL assigned_population)")
     observed = {str(v): int(u) for v, u, _ in rows}
     expected = meta.get("intended_shares") or {}
     if not expected:

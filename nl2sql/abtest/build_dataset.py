@@ -458,6 +458,8 @@ VIEWS = [
     ("fact_pre_period_totals",
      "SELECT m.user_id, m.experiment_id, a.variant, SUM(m.sessions) AS pre_sessions, "
      "SUM(m.pageviews) AS pre_pageviews, SUM(m.revenue_usd) AS pre_revenue, "
+     "SUM(m.add_to_cart) AS pre_add_to_cart, SUM(m.purchases) AS pre_purchases, "
+     "SUM(m.session_duration_s) AS pre_session_duration_s, "
      "COUNT(DISTINCT m.metric_date) AS pre_days "
      "FROM fact_daily_user_metrics m JOIN fact_user_assignments a USING (user_id, experiment_id) "
      "WHERE m.phase = 'pre' GROUP BY 1,2,3"),
@@ -481,13 +483,31 @@ VIEWS = [
      "m.phase, m.sessions, m.pageviews, m.add_to_cart, m.purchases, m.revenue_usd, "
      "m.session_duration_s "
      "FROM fact_daily_user_metrics m JOIN fact_user_assignments a USING (user_id, experiment_id)"),
+    # Windowed grain: one row per assigned user per test day, zero-filled. This is what
+    # the MDL queries for a date range, because experiment_user above is pre-aggregated
+    # over the whole test phase and therefore cannot honour a requested window. A user
+    # with no activity has no rows here, so the GROUP BY in the query is what preserves
+    # them in the denominator.
+    ("fact_assigned_daily",
+     "SELECT a.user_id, a.experiment_id, a.variant, a.country, a.platform, "
+     "m.metric_date, "
+     "COALESCE(m.sessions, 0) AS sessions, "
+     "COALESCE(m.pageviews, 0) AS pageviews, COALESCE(m.add_to_cart, 0) AS add_to_cart, "
+     "COALESCE(m.purchases, 0) AS purchases, COALESCE(m.revenue_usd, 0.0) AS revenue_usd, "
+     "COALESCE(m.session_duration_s, 0.0) AS session_duration_s "
+     "FROM fact_user_assignments a "
+     "LEFT JOIN fact_daily_user_metrics m "
+     "  ON m.user_id = a.user_id AND m.experiment_id = a.experiment_id "
+     "WHERE m.phase = 'test' OR m.metric_date IS NULL"),
     ("fact_assigned_with_pre",
      "SELECT a.user_id, a.experiment_id, a.variant, a.country, a.platform, "
      "COALESCE(t.days_active, 0) AS days_active, COALESCE(t.sessions, 0) AS sessions, "
      "COALESCE(t.pageviews, 0) AS pageviews, COALESCE(t.add_to_cart, 0) AS add_to_cart, "
      "COALESCE(t.purchases, 0) AS purchases, COALESCE(t.revenue_usd, 0.0) AS revenue_usd, "
      "COALESCE(p.pre_sessions, 0) AS pre_sessions, COALESCE(p.pre_pageviews, 0) AS pre_pageviews, "
-     "COALESCE(p.pre_revenue, 0.0) AS pre_revenue, COALESCE(p.pre_days, 0) AS pre_days "
+     "COALESCE(p.pre_revenue, 0.0) AS pre_revenue, COALESCE(p.pre_days, 0) AS pre_days, "
+     "COALESCE(p.pre_add_to_cart, 0) AS pre_add_to_cart, COALESCE(p.pre_purchases, 0) AS pre_purchases, "
+     "COALESCE(p.pre_session_duration_s, 0.0) AS pre_session_duration_s "
      "FROM fact_user_assignments a "
      "LEFT JOIN fact_test_phase_user_totals t USING (user_id, experiment_id) "
      "LEFT JOIN fact_pre_period_totals p USING (user_id, experiment_id)"),

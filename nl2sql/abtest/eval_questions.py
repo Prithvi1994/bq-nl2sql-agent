@@ -149,10 +149,27 @@ def check_case(runner: Runner, case: Dict[str, Any]) -> List[Tuple[str, bool, st
     out.append((f"{name}: queries executed", not failed,
                 f"failed: {[q['label'] for q in failed]}"))
 
-    # BigQuery surface must be preserved in the emitted SQL.
-    sql = " ".join(q.get("sql", "") for q in res.get("queries", []))
-    if sql:
-        out.append((f"{name}: BigQuery dialect", "`" in sql and "DECLARE" in sql, "no backticks/DECLARE"))
+    # Grounding invariant: every query the answer depends on went through the semantic
+    # layer and names an MDL model. This replaced an earlier check for backticks and
+    # DECLARE, which only held because the SQL was hand-written; Wren's planned output
+    # uses bare FQNs, so that check would have passed on ungrounded SQL and failed on
+    # grounded SQL.
+    queries = res.get("queries", [])
+    if queries:
+        semantic = [q for q in queries if q.get("semantic_layer") == "wren"]
+        named_model = [q for q in semantic if any(q.get("models") or [])]
+        out.append((
+            f"{name}: grounded in MDL",
+            bool(semantic) and bool(named_model),
+            "no query was planned through the semantic layer naming a model",
+        ))
+        # The intent SQL and the planned SQL must both be recoverable: a log with only
+        # one of them cannot prove what actually ran.
+        out.append((
+            f"{name}: both intent and planned SQL logged",
+            all(q.get("sql") and q.get("planned_sql") for q in named_model),
+            "a semantic query is missing its intent or planned SQL",
+        ))
 
     return out
 
