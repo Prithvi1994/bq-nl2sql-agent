@@ -27,6 +27,10 @@ traces/
 golden/*.jsonl
 *.output.json
 
+# Generated A/B dataset (rebuild with: python -m nl2sql.abtest.build_dataset)
+abtest_data/
+*.duckdb
+
 # Temporary
 tmp/
 temp/
