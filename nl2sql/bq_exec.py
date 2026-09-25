@@ -65,14 +65,32 @@ def split_script(sql: str) -> tuple[Dict[str, str], str]:
                 changed = True
         if not changed:
             break
-    body = body.strip().rstrip(";").strip()
+    body = strip_trailing_semicolon(body.strip())
     if not body:
         raise BQScriptError("Query contains only declarations and no final SELECT.")
     return variables, body
 
 
 def _split_statements(sql: str) -> list[str]:
-    """Split on semicolons that are not inside a string literal."""
+    """Split a BQ script into statements on semicolons that are not inside a literal.
+
+    Which escapes and quote styles exist is a per-dialect property (`$$..$$`,
+    backticks, `q'[...]'`, triple quotes, `[brackets]`), so a hand-written scanner
+    has to re-encode all of them and gets them wrong. sqlglot already has a
+    dialect-aware tokenizer; use it and fall back to the naive scan only when it
+    cannot lex the input at all.
+    """
+    try:
+        parsed = sqlglot.parse(sql, read="bigquery")
+    except Exception:  # unterminated string, unterminated comment, unparseable
+        return _split_statements_naive(sql)
+
+    statements = [stmt.sql(dialect="bigquery") for stmt in parsed if stmt is not None]
+    return [s for s in statements if s.strip()]
+
+
+def _split_statements_naive(sql: str) -> list[str]:
+    """Last-resort scanner used only when sqlglot cannot tokenize the input."""
     out, buf, in_str, quote = [], [], False, ""
     i = 0
     while i < len(sql):
@@ -103,6 +121,37 @@ def _split_statements(sql: str) -> list[str]:
     if buf:
         out.append("".join(buf))
     return out
+
+
+def strip_trailing_semicolon(sql: str) -> str:
+    """Remove the terminating `;` and anything after it, without touching literals.
+
+    Needed because a trailing semicolon breaks `SELECT * FROM (sql)` and `EXPLAIN sql`
+    wrappers, and because a comment after the semicolon defeats a naive `rstrip(';')`.
+    A `;` inside a string literal or a comment is preserved.
+
+    sqlglot's tokenizer drops comments from the token stream, so the last real token
+    is the last piece of the statement and the cut point is exact.
+    """
+    try:
+        parsed = sqlglot.parse(sql, read="bigquery")
+    except Exception:
+        return re.sub(r"[;\s]+\Z", "", sql)
+
+    def _is_real(stmt: Any) -> bool:
+        # sqlglot models a trailing comment as a `Semicolon` node whose rendered SQL is
+        # just the comment text. It is not a query, and a `Select` can also carry
+        # comments in its own `comments` list.
+        if stmt is None or isinstance(stmt, (sqlglot.exp.Semicolon, sqlglot.exp.Comment)):
+            return False
+        if isinstance(stmt, sqlglot.exp.Expression) and stmt.comments:
+            stmt.comments = []
+        return bool(stmt.sql(dialect="bigquery").strip(" ;"))
+
+    real = [s for s in parsed if _is_real(s)]
+    if not real:
+        return sql.strip()
+    return real[-1].sql(dialect="bigquery").rstrip()
 
 
 def _literal_after_default(statement: str) -> str:
@@ -230,7 +279,14 @@ def run_bq_query(
     conn = None
     try:
         conn = duckdb.connect(db_path, read_only=True)
-        cursor = conn.execute(duckdb_sql)
+        # Enforce the row cap in the engine, not by slicing in Python. Appending
+        # `LIMIT n` to the user's SQL can be defeated by an inner LIMIT, and a
+        # trailing `;` or `-- comment` swallows the appended clause. Wrapping as an
+        # outer SELECT means the outer limit always wins and can only reduce rows.
+        # The wrap is multiline so a trailing line comment is terminated by the
+        # newline instead of swallowing the closing paren.
+        limited = f"SELECT * FROM (\n{duckdb_sql}\n) AS _wren_limit LIMIT {int(row_limit)}"
+        cursor = conn.execute(limited)
         rows = cursor.fetchmany(row_limit + 1)
         truncated = len(rows) > row_limit
         columns = [d[0] for d in cursor.description] if cursor.description else []
