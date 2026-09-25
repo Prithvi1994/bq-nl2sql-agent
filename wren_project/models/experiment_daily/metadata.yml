@@ -1,0 +1,40 @@
+name: experiment_daily
+properties:
+  description: >
+    One row per user per day of activity for the assigned arm, with the variant and
+    segment columns already joined in. This is the only table metric queries need.
+    A user has a row here only on days they were active, so this is NOT the
+    population: use the assigned_population view for any denominator.
+table_reference:
+  catalog: analytics
+  schema: ab
+  table: fact_daily_assigned
+columns:
+  - name: metric_date
+    type: date
+  - name: user_id
+    type: varchar
+  - name: experiment_id
+    type: varchar
+  - name: variant
+    type: varchar
+    description: The arm the user was assigned to. 'control' is the baseline.
+  - name: country
+    type: varchar
+  - name: platform
+    type: varchar
+  - name: phase
+    type: varchar
+    description: "'pre' is before the test started, 'test' is the test window."
+  - name: sessions
+    type: bigint
+  - name: pageviews
+    type: bigint
+  - name: add_to_cart
+    type: bigint
+  - name: purchases
+    type: bigint
+  - name: revenue_usd
+    type: double
+  - name: session_duration_s
+    type: double

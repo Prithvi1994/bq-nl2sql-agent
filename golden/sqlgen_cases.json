@@ -1,0 +1,49 @@
+{
+  "description": "Cases where the LLM writes BigQuery SQL. Scored on whether the executed result is correct, not on string similarity to a reference. Each case carries the answer it must produce, derived from injected ground truth.",
+  "db": "./abtest_data/abtest.duckdb",
+  "cases": [
+    {
+      "id": "gen-revenue-by-variant",
+      "question": "What is the total revenue by variant for the checkout_flow_v2 experiment during the test phase?",
+      "must_reference": ["experiment_daily"],
+      "forbid_reference": ["fact_daily_user_metrics", "fact_user_assignments"],
+      "check": "variant_totals",
+      "notes": "Model names only, not physical tables. The pre-joined daily view already carries variant."
+    },
+    {
+      "id": "gen-revenue-by-country",
+      "question": "Total revenue by country for checkout_flow_v2 during the test phase.",
+      "must_reference": ["experiment_daily"],
+      "check": "country_totals",
+      "notes": "7 countries expected."
+    },
+    {
+      "id": "gen-purchasing-users-by-variant",
+      "question": "How many users made at least one purchase in checkout_flow_v2 during the test phase, broken down by variant?",
+      "must_reference": ["experiment_daily"],
+      "check": "purchasing_users_by_variant",
+      "notes": "Requires COUNT(DISTINCT IF(purchases>0,user_id,NULL)), not COUNT(*) or SUM(purchases)."
+    },
+    {
+      "id": "gen-active-users-by-variant",
+      "question": "How many distinct users were active in checkout_flow_v2 during the test phase, by variant?",
+      "must_reference": ["experiment_daily"],
+      "check": "active_users_by_variant",
+      "notes": "This is the trap case: active users is NOT the denominator for rates."
+    },
+    {
+      "id": "gen-window-bounded",
+      "question": "Total revenue for checkout_flow_v2 in the test phase, but only for the first 7 days of the test period.",
+      "must_reference": ["experiment_daily"],
+      "check": "first_7_days_total",
+      "notes": "Requires a date filter. A model that ignores it returns 56 days of revenue."
+    },
+    {
+      "id": "gen-wrong-experiment",
+      "question": "Total revenue by variant for the onboarding_email_v1 experiment during the test phase.",
+      "must_reference": ["experiment_daily"],
+      "check": "variant_totals_onboarding",
+      "notes": "Same shape, different experiment. Catches a model that hardcodes the id from the prompt examples."
+    }
+  ]
+}

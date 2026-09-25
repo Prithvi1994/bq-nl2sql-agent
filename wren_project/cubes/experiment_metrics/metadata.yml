@@ -1,0 +1,38 @@
+name: experiment_metrics
+properties:
+  description: >
+    Per-experiment measures. Rooted at experiment_daily, which already carries the
+    variant and segment columns, so no join is needed for the metric itself. The
+    denominator is assigned_population: counting users in the daily table would
+    exclude everyone who never returned.
+base_object: experiment_daily
+measures:
+  - name: active_users
+    expression: COUNT(DISTINCT user_id)
+    type: integer
+    description: Users with at least one active day. Not a valid denominator.
+  - name: total_revenue
+    expression: SUM(revenue_usd)
+    type: double
+    description: Total revenue in USD.
+  - name: total_sessions
+    expression: SUM(sessions)
+    type: bigint
+    description: Total sessions.
+  - name: total_purchases
+    expression: SUM(purchases)
+    type: bigint
+    description: Total purchases.
+dimensions:
+  - name: variant
+    expression: variant
+    type: varchar
+  - name: experiment_id
+    expression: experiment_id
+    type: varchar
+  - name: country
+    expression: country
+    type: varchar
+  - name: platform
+    expression: platform
+    type: varchar

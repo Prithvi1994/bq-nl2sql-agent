@@ -1,0 +1,6 @@
+relationships: []
+# No relationships are declared, and none are needed.
+#
+# fact_daily_assigned is already fact_daily_user_metrics JOIN fact_user_assignments,
+# so variant, country and platform sit on the same row as the metrics. A relationship
+# here would introduce a second join path and risk fan-out double counting.

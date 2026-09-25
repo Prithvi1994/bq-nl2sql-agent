@@ -1,0 +1,22 @@
+name: assigned_population
+properties:
+  description: >
+    One row per user per experiment at the moment of randomisation. This is the
+    authoritative denominator for every experiment metric: a user appears here
+    whether or not they ever became active. Counting distinct users in
+    experiment_daily instead of using this view drops inactive users and inflates
+    every rate.
+ref_sql: |
+  SELECT a.user_id, a.experiment_id, a.variant, a.country, a.platform
+  FROM fact_user_assignments a
+columns:
+  - name: user_id
+    type: varchar
+  - name: experiment_id
+    type: varchar
+  - name: variant
+    type: varchar
+  - name: country
+    type: varchar
+  - name: platform
+    type: varchar
