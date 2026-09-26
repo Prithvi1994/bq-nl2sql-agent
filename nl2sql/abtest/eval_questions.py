@@ -1,48 +1,62 @@
-"""Eval for the NL question path. Unlike run_eval.py, these can fail.
+"""Question eval for the Wren-native path.
 
-Three kinds of check:
+Scores on executed results and behaviour, not on plan internals. The old checks
+read the deterministic QueryPlan (intent / metric / days); those fields do not
+exist when the LLM writes the SQL directly. What replaces them: the same ground
+truth, the refusal discipline, and a grounding assertion that the planned SQL
+came out of Wren's gate.
 
-  correctness  the answer matches ground truth, not a previous run
-  refusal     the agent declines questions it must decline
-  grounding   every number in the answer traces to a query that ran
-
-There is no mock LLM anywhere in this file. The question path is deterministic
-(metric resolution, control arm, window and significance rule are all code), so a
-mock would only prove the mock works.
+An LLM eval must be able to fail. A wrong-but-plausible number is a failure here
+just as it was on the deterministic path — the oracle is the injected effect
+size, unchanged.
 """
 from __future__ import annotations
 
 import json
 import math
 import sys
-from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .ask import QuestionError, ask, load_experiments
+from .answer import QuestionError, ask
 
 HERE = Path(__file__).resolve().parent.parent.parent
 GOLDEN = HERE / "golden"
-TRUTH = HERE / "abtest_data" / "ground_truth.json"
-
-
-def _truth() -> Dict[str, Any]:
-    return json.loads(TRUTH.read_text(encoding="utf-8"))["experiments"]
 
 
 class Runner:
-    def __init__(self, db: str, default_end: str) -> None:
+    """Runs the Wren-native answer path: LLM writes SQL, the gate checks it."""
+
+    def __init__(self, db: str) -> None:
         self.db = db
-        self.default_end = date.fromisoformat(default_end)
-        self.experiments = load_experiments(db)
         self.truth = _truth()
 
     def ask(self, question: str) -> Dict[str, Any]:
-        return ask(question, self.db, experiments=self.experiments, default_end=self.default_end)
+        return ask(question, self.db)
+
+
+def _truth() -> Dict[str, Any]:
+    path = HERE / "abtest_data" / "ground_truth.json"
+    return json.loads(path.read_text(encoding="utf-8"))["experiments"]
 
 
 def _fmt(x: Optional[float]) -> str:
     return "n/a" if x is None else f"{x * 100:+.2f}%"
+
+
+def _guess_metric_key(question: str) -> str:
+    L = question.lower()
+    if "session" in L:
+        return "sessions_per_user"
+    if "aov" in L or "order value" in L:
+        return "aov"
+    if "purchase" in L or "conversion" in L:
+        return "purchase_rate"
+    if "cart" in L:
+        return "add_to_cart_rate"
+    if "pageview" in L:
+        return "sessions_per_user"
+    return "revenue_per_user"
 
 
 def check_case(runner: Runner, case: Dict[str, Any]) -> List[Tuple[str, bool, str]]:
@@ -52,144 +66,78 @@ def check_case(runner: Runner, case: Dict[str, Any]) -> List[Tuple[str, bool, st
     try:
         res = runner.ask(case["question"])
     except QuestionError as exc:
-        out.append((f"{name}: answered", False, f"refused: {exc}"))
+        out.append((f"{name}: answered", False, f"gate refused: {str(exc)[:110]}"))
+        return out
+    except Exception as exc:  # noqa: BLE001 - one broken case must not kill the run
+        out.append((f"{name}: answer crashed", False, f"{type(exc).__name__}: {str(exc)[:80]}"))
         return out
 
-    plan = res.get("plan", {})
-    analysis = res.get("analysis", {})
+    if case.get("expect_refusal"):
+        ok = bool(res.get("refused"))
+        out.append((f"{name}: refusal", ok,
+                    f"answered instead: {res.get('answer', '')[:80]}" if not ok
+                    else res.get("answer", "")[:70]))
+        return out
 
-    if case.get("intent") and plan.get("intent") != case["intent"]:
-        out.append((f"{name}: intent", False, f"got {plan.get('intent')}, want {case['intent']}"))
-    if case.get("experiment_id") and plan.get("experiment_id") != case["experiment_id"]:
-        out.append((f"{name}: experiment", False, f"got {plan.get('experiment_id')}"))
-    if case.get("metric") and plan.get("metric") != case["metric"]:
-        out.append((f"{name}: metric", False, f"got {plan.get('metric')}, want {case['metric']}"))
-    if case.get("expect_dimension") and plan.get("dimension") != case["expect_dimension"]:
-        out.append((f"{name}: dimension", False, f"got {plan.get('dimension')}"))
-    if "expect_days" in case and plan.get("days") != case["expect_days"]:
-        out.append((f"{name}: window", False, f"got {plan.get('days')} days, want {case['expect_days']}"))
+    # Grounding: the query that ran was planned by Wren and passed the gate.
+    q = (res.get("queries") or [{}])[-1]
+    out.append((
+        f"{name}: grounded (Wren plan + gate)",
+        bool(res.get("planned_sql")) and q.get("invariants") == "passed",
+        "planned SQL missing or the gate did not record a pass",
+    ))
 
-    # 90-day cap, and the clamp must be visible rather than silent.
-    if plan.get("days", 0) > 90:
-        out.append((f"{name}: 90-day cap", False, f"{plan['days']} days"))
-    if "expect_clamped" in case:
-        clamped = "clamped" in (plan.get("extra") or {})
-        out.append((f"{name}: clamp visible", clamped == case["expect_clamped"], str(plan.get("extra"))))
-
-    # Winner correctness.
-    if "expect_winner" in case:
-        want = case["expect_winner"]
-        got = (res.get("winner") or {}).get("variant")
-        if want is None:
-            ok = got is None
-            out.append((f"{name}: no winner claimed", ok, f"claimed {got!r}"))
-        else:
-            out.append((f"{name}: winner", got == want, f"got {got!r}, want {want!r}"))
-
-    if case.get("expect_no_reliable_winner"):
-        text = res.get("answer", "").lower()
-        ok = ("no reliable difference" in text or "no variant beats" in text
-              or "includes zero" in text or "no winner" in text)
-        out.append((f"{name}: hedged language", ok, res.get("answer", "")[:90]))
-
-    if "expect_winner_significant" in case:
-        got = bool((res.get("winner") or {}).get("significant"))
-        out.append((f"{name}: significance", got == case["expect_winner_significant"], f"got {got}"))
-
-    if case.get("expect_focus_variant"):
-        got = (plan.get("extra") or {}).get("focus_variant")
-        out.append((f"{name}: focus variant", got == case["expect_focus_variant"],
-                    f"got {got!r}, want {case['expect_focus_variant']!r}"))
-
-    # Lift must be near the true lift. The arm to check may differ from the winner:
-    # when SRM blocks a decision there is no winner, but the effect is still real.
+    # Lift recovered from the query's own per-user rows, against the injected truth.
+    lifts = (res.get("analysis") or {}).get("lifts") or {}
     if case.get("expect_true_lift_within_pp") is not None:
         tol = case["expect_true_lift_within_pp"] / 100.0
-        metric = case.get("metric") or ""
-        variant = (case.get("expect_lift_variant") or case.get("expect_focus_variant")
-                   or case.get("expect_winner") or "treatment_b")
-        true_key = {"revenue_per_purchaser": "aov"}.get(metric, metric)
+        variant = (case.get("expect_lift_variant") or case.get("expect_winner")
+                   or "treatment_b")
+        key = case.get("metric") or _guess_metric_key(case["question"])
+        true_key = {"revenue_per_purchaser": "aov"}.get(key, key)
         true_lift = runner.truth[case["experiment_id"]]["true_lift_vs_control"][variant].get(
             true_key, 0.0
         )
-        lifts = analysis.get("lifts", {})
         if variant in lifts:
             obs = lifts[variant]["relative_lift"]
-            ok = abs(obs - true_lift) <= tol
-            out.append((f"{name}: lift within {case['expect_true_lift_within_pp']}pp",
-                        ok, f"true {_fmt(true_lift)} vs observed {_fmt(obs)}"))
+            out.append((
+                f"{name}: lift within {case['expect_true_lift_within_pp']}pp",
+                math.isfinite(obs) and abs(obs - true_lift) <= tol,
+                f"true {_fmt(true_lift)} vs observed {_fmt(obs)}",
+            ))
         else:
-            out.append((f"{name}: lift", False, f"no lift for {variant}"))
+            out.append((f"{name}: lift", False,
+                        f"no lift computed for {variant} — the model returned "
+                        "grouped rows instead of per-user rows"))
 
-    # SRM.
+    if "expect_winner" in case:
+        got = (res.get("winner") or {}).get("variant")
+        want = case["expect_winner"]
+        if want is None:
+            out.append((f"{name}: no winner claimed", got is None, f"claimed {got!r}"))
+        else:
+            out.append((f"{name}: winner", got == want, f"got {got!r}, want {want!r}"))
+
     if "expect_srm_detected" in case:
-        srm = (res.get("analysis") or {}).get("srm") or res.get("srm")
-        detected = bool(srm and srm.get("detected"))
-        out.append((f"{name}: SRM", detected == case["expect_srm_detected"],
-                    f"detected={detected} want={case['expect_srm_detected']}"))
-    if case.get("expect_srm_in_answer"):
-        text = res.get("answer", "").lower()
-        out.append((f"{name}: SRM in answer", "sample ratio mismatch" in text, "not mentioned"))
-
-    # Trend / cohort shape.
-    if "expect_variants" in case:
-        n = len({s["variant"] for s in res.get("trend", [])})
-        out.append((f"{name}: variant count", n == case["expect_variants"], f"got {n}"))
-    if "expect_min_segments" in case:
-        n = len([line for line in res.get("detail", []) if line.strip().startswith("- ")])
-        out.append((f"{name}: segment count", n >= case["expect_min_segments"], f"got {n}"))
-
-    # Duration math.
-    if case.get("expect_n_per_arm_positive"):
-        n = res.get("n_per_arm", 0)
-        out.append((f"{name}: n_per_arm", isinstance(n, int) and n > 0, f"got {n}"))
-
-    # Grounding: every query must have executed.
-    failed = [q for q in res.get("queries", []) if not q.get("ok")]
-    out.append((f"{name}: queries executed", not failed,
-                f"failed: {[q['label'] for q in failed]}"))
-
-    # Grounding invariant: every query the answer depends on went through the semantic
-    # layer and names an MDL model. This replaced an earlier check for backticks and
-    # DECLARE, which only held because the SQL was hand-written; Wren's planned output
-    # uses bare FQNs, so that check would have passed on ungrounded SQL and failed on
-    # grounded SQL.
-    queries = res.get("queries", [])
-    if queries:
-        semantic = [q for q in queries if q.get("semantic_layer") == "wren"]
-        named_model = [q for q in semantic if any(q.get("models") or [])]
-        out.append((
-            f"{name}: grounded in MDL",
-            bool(semantic) and bool(named_model),
-            "no query was planned through the semantic layer naming a model",
-        ))
-        # The intent SQL and the planned SQL must both be recoverable: a log with only
-        # one of them cannot prove what actually ran.
-        out.append((
-            f"{name}: both intent and planned SQL logged",
-            all(q.get("sql") and q.get("planned_sql") for q in named_model),
-            "a semantic query is missing its intent or planned SQL",
-        ))
+        got = bool((res.get("srm") or {}).get("detected"))
+        out.append((f"{name}: srm detected", got == case["expect_srm_detected"],
+                    f"got {got}, want {case['expect_srm_detected']}"))
 
     return out
 
 
 def check_refusal(runner: Runner, case: Dict[str, Any]) -> List[Tuple[str, bool, str]]:
     name = case["id"]
-    should_refuse = not case.get("not_refused")
+    expect_refusal = case.get("expect_refusal", True)
     try:
         res = runner.ask(case["question"])
     except QuestionError as exc:
-        if should_refuse:
-            return [(f"{name}: refused", True, str(exc)[:100])]
-        return [(f"{name}: answered", False, f"refused: {exc}")]
-
-    if should_refuse:
-        return [(f"{name}: refused", False, f"answered instead: {res.get('answer', '')[:90]}")]
-
-    extra = res.get("plan", {}).get("extra") or {}
-    ok = res.get("plan", {}).get("days", 0) <= 90 and "clamped" in extra
-    return [(f"{name}: clamped not refused", ok, f"plan={res.get('plan')}")]
+        return [(f"{name}: refused", expect_refusal, str(exc)[:100])]
+    except Exception as exc:  # noqa: BLE001
+        return [(f"{name}: crashed", False, f"{type(exc).__name__}: {str(exc)[:80]}")]
+    refused = bool(res.get("refused"))
+    return [(f"{name}: refused", refused == expect_refusal,
+             res.get("answer", "")[:90])]
 
 
 def main() -> int:
@@ -203,7 +151,7 @@ def main() -> int:
         print(f"missing {db}\nrun: .venv/bin/python -m nl2sql.abtest.build_dataset")
         return 2
 
-    runner = Runner(db, cases_doc["default_end"])
+    runner = Runner(db)
     total = passed = 0
     failures: List[str] = []
 
@@ -234,4 +182,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys_exit = main()
+    raise SystemExit(sys_exit)

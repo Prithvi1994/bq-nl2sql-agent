@@ -1,56 +1,52 @@
-# Population rules
+# Population rules (daily-aggregated grain)
 
-These are policies, not schema facts. The MDL encodes what each measure *is*; this
+These are policies, not schema facts. The MDL/cube encodes what each measure *is*; this
 file encodes which measure is legal in which context. An agent that follows the MDL
 but not this file will produce a valid, plausible, wrong number.
 
-## 1. The denominator is assigned users, never active users
+The dataset is synthetic with no PII. Row-level privacy rules re-enter here when
+real user data lands; nothing below assumes their absence.
 
-`experiment_daily` (one row per user per *active* day) is not the population.
-A user who was randomised and never came back has no row in it.
+## 1. The denominator is SUM(users), never COUNT of day-rows
 
-All per-user rates divide by `assigned_users`, which is `COUNT(*)` over
-`experiment_user` — one row per assignment, zero-filled.
+The grain is one row per day per variant. `COUNT(*)` over these rows counts
+**user-days**, not users — in a 90-day test that inflates every per-user rate
+roughly 90x while looking completely ordinary.
 
-**Symptom of getting this wrong:** every rate is inflated by roughly the
-active-user share. In our 30,000-user test with a 50% active rate, a purchase
-rate computed over active users reads roughly double the truth, and the lift
-still looks significant. No syntax check or result-shape check catches this.
+Every rate divides by `assigned_users` = `SUM(users)` pooled over the window.
 
-**Never** do this:
 ```sql
-SELECT SAFE_DIVIDE(COUNT(DISTINCT IF(purchases>0,user_id,NULL)), COUNT(DISTINCT user_id))
-FROM experiment_daily          -- denominator excludes inactive users
+-- WRONG: denominator is user-days
+SELECT SAFE_DIVIDE(SUM(purchases), COUNT(*)) FROM experiment_daily
+-- RIGHT: pooled sum-ratio
+SELECT SAFE_DIVIDE(SUM(purchases), SUM(users)) FROM experiment_daily
 ```
 
-## 2. AOV divides by purchase events, not by users and not by assigned users
+## 2. Rates are pooled sum-ratios, never averages of day rates
 
-`revenue_per_purchaser` uses `SUM(purchases)` in the denominator. Dividing by
-`assigned_users` produces revenue per user wearing AOV's name — a different
-metric that will differ by the non-purchasing share, usually a large amount.
+`SUM(numerator) / SUM(users)`. `AVG(day_rate)` weights a quiet Monday equally
+with a Black Friday. The one query shape is the cube's; this rule is why.
 
-**Never** do this:
-```sql
-SAFE_DIVIDE(SUM(revenue_usd), assigned_users)   -- this is revenue_per_user
-```
+## 3. AOV divides by purchase events, not by users
 
-## 3. "Purchasing users" is a distinct-user count, not a sum of events
-
-A user who buys three times is one purchasing user and three purchase events.
-`COUNT(DISTINCT IF(purchases > 0, user_id, NULL))` is the conversion denominator;
-`SUM(purchases)` is the event count. They differ by repeat rate.
+`revenue_per_purchaser` = `SUM(revenue_usd) / SUM(purchases)`. Dividing by
+`assigned_users` produces revenue per user wearing AOV's name.
 
 ## 4. A test window is clipped to the experiment's own start and end
 
-`dim_experiments.started_on` / `ended_on` are authoritative. A requested window
-that runs past `ended_on` produces partial exposure per arm, which manufactures a
-winner in a null-effect experiment.
+The registry row (`started_on` / `ended_on`) is authoritative. A window running
+past `ended_on` produces partial exposure per arm and can manufacture a winner
+in a null-effect experiment. Tests run 90 days maximum; a longer implied window
+is stated, not silently truncated.
 
-Tests run 90 days maximum. If a question implies a longer window, say so rather
-than silently returning the truncated result.
+## 5. A lift decision needs dispersion — which does not exist at pooled grain
 
-## 5. `days_active` is not a rate
+A pooled rate is one number per arm; it has no variance. Significance comes from
+the **day-level** series feeding stats.py (day-level t / CUPED). No answer may
+claim "significant" or "winner" from pooled rates alone, and SRM (assignment
+share vs intended split) blocks any winner before lift is even read.
 
-`days_active` is a count of active days summed over users. To get a per-user
-active-day rate, divide by `assigned_users`. To get an active-day rate, divide by
-the window length. Dividing by nothing gives a meaningless large number.
+## 6. One experiment per question
+
+Lift is only comparable within a single experiment's randomisation. Two
+experiment ids in one question is a refusal, not a join.

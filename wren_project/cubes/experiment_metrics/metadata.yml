@@ -1,44 +1,51 @@
 name: experiment_metrics
 properties:
   description: >
-    THE metric catalog. These measures are the only sanctioned way to compute an
-    experiment metric; never hand-write an aggregate over experiment_daily.
-    Rooted at experiment_user (one row per assigned user, zero-filled), which is
-    what makes the denominator correct by construction: COUNT(*) here counts
-    assignments, including users who never became active.
-  unit_map:
-    binary: [purchase_rate, add_to_cart_rate]
-    continuous: [revenue_per_user, revenue_per_purchaser, sessions_per_user,
-                 pageviews_per_user, days_active, session_duration_s]
-  cuped_covariates: [pre_sessions, pre_pageviews, pre_revenue, pre_days]
-base_object: experiment_user
+    THE metric catalog for the daily-aggregated grain. These measures are the only
+    sanctioned way to compute an experiment metric; never hand-write an aggregate
+    over experiment_daily. Rooted at experiment_daily (one row per day per variant):
+    the denominator rules live in the measures' structure itself — every rate is
+    SUM(numerator) / SUM(users), never an average of day-level rates and never
+    COUNT of day-rows.
+base_object: experiment_daily
 measures:
   # --- population ------------------------------------------------------------------
   - name: assigned_users
-    expression: COUNT(*)
-    type: integer
+    expression: SUM(users)
+    type: bigint
     description: >
-      The denominator of record. Counts assignments, not activity. Every rate below
-      divides by this.
+      The denominator of record at daily grain: the sum of assigned users active
+      per day. NOT COUNT(*) — COUNT(*) over day-rows is user-days and inflates
+      every rate by ~40x. Pooling rule: SUM(numerator) / SUM(users); never
+      AVG(day rates), which weights quiet days equally with heavy days.
   # --- conversion ------------------------------------------------------------------
-  - name: purchasing_users
-    expression: COUNT(DISTINCT IF(purchases > 0, user_id, NULL))
-    type: integer
-    description: >
-      Users with at least one purchase. Distinct users, not SUM(purchases): a repeat
-      buyer counts once.
+  - name: total_purchases
+    expression: SUM(purchases)
+    type: bigint
+    description: Total purchase events in the window.
   - name: purchase_rate
-    expression: SAFE_DIVIDE(purchasing_users, assigned_users)
+    expression: SAFE_DIVIDE(total_purchases, assigned_users)
     type: double
-    description: Share of assigned users who purchased at least once.
-  - name: add_to_cart_users
-    expression: COUNT(DISTINCT IF(add_to_cart > 0, user_id, NULL))
-    type: integer
-    description: Users who added something to the cart.
-  - name: add_to_cart_rate
-    expression: SAFE_DIVIDE(add_to_cart_users, assigned_users)
+    description: >
+      Pooled conversion: total purchase events over total assigned active users.
+      This is the sum-ratio estimator; the day-level CI lives in stats.py, not here.
+  # --- engagement ------------------------------------------------------------------
+  - name: total_sessions
+    expression: SUM(sessions)
+    type: bigint
+    description: Total sessions in the window.
+  - name: sessions_per_user
+    expression: SAFE_DIVIDE(total_sessions, assigned_users)
     type: double
-    description: Share of assigned users who added to cart.
+    description: Pooled sessions per assigned active user.
+  - name: total_pageviews
+    expression: SUM(pageviews)
+    type: bigint
+    description: Total pageviews in the window.
+  - name: pageviews_per_user
+    expression: SAFE_DIVIDE(total_pageviews, assigned_users)
+    type: double
+    description: Pooled pageviews per assigned active user.
   # --- revenue ---------------------------------------------------------------------
   - name: total_revenue
     expression: SUM(revenue_usd)
@@ -47,64 +54,24 @@ measures:
   - name: revenue_per_user
     expression: SAFE_DIVIDE(total_revenue, assigned_users)
     type: double
-    description: Revenue per assigned user, including users who spent nothing.
-  - name: total_purchases
-    expression: SUM(purchases)
-    type: bigint
-    description: Total purchase events, not distinct purchasers.
+    description: Pooled revenue per assigned active user, including zero-spend days.
   - name: revenue_per_purchaser
     expression: SAFE_DIVIDE(total_revenue, total_purchases)
     type: double
     description: >
       Average order value. Denominator is purchase EVENTS. Dividing by assigned_users
       here silently redefines the metric as revenue_per_user.
-  # --- engagement ------------------------------------------------------------------
-  - name: total_sessions
-    expression: SUM(sessions)
-    type: bigint
-    description: Total sessions.
-  - name: sessions_per_user
-    expression: SAFE_DIVIDE(total_sessions, assigned_users)
-    type: double
-    description: Sessions per assigned user, including users with zero sessions.
-  - name: total_pageviews
-    expression: SUM(pageviews)
-    type: bigint
-    description: Total pageviews.
-  - name: pageviews_per_user
-    expression: SAFE_DIVIDE(total_pageviews, assigned_users)
-    type: double
-    description: Pageviews per assigned user.
-  - name: active_days
-    expression: SUM(days_active)
-    type: double
-    description: >
-      Total active days across assigned users. A count, not a rate: for a per-user
-      rate divide by assigned_users, for an active-day rate divide by the window
-      length. Named active_days rather than days_active because a measure cannot
-      share a name with the column it aggregates.
-  - name: total_session_duration_s
-    expression: SUM(session_duration_s)
-    type: double
-    description: Total session duration in seconds.
-  - name: avg_session_duration_s
-    expression: SAFE_DIVIDE(SUM(session_duration_s), assigned_users)
-    type: double
-    description: >
-      Session duration per assigned user, in seconds. Named avg_ rather than
-      session_duration_s because a measure cannot share a name with the column it
-      aggregates — Wren resolves that as a circular reference and refuses the MDL.
 dimensions:
   - name: variant
     expression: variant
     type: varchar
-    description: The arm the user was assigned to. 'control' is the baseline.
+    description: The arm the day's activity belongs to. 'control' is the baseline.
   - name: experiment_id
     expression: experiment_id
     type: varchar
+  - name: metric_date
+    expression: metric_date
+    type: date
   - name: country
     expression: country
-    type: varchar
-  - name: platform
-    expression: platform
     type: varchar

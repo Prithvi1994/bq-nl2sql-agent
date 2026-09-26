@@ -1,40 +1,35 @@
 name: experiment_daily
 properties:
   description: >
-    One row per user per day of activity for the assigned arm, with the variant and
-    segment columns already joined in. This is the only table metric queries need.
-    A user has a row here only on days they were active, so this is NOT the
-    population: use the assigned_population view for any denominator.
+    One row per experiment per day per variant — the platform's daily-aggregated
+    grain. Every experiment table conforms to this column set. users is the
+    number of ASSIGNED users active that day per arm: it is the only correct
+    denominator column; dividing by COUNT of day-rows is user-days, not users.
 table_reference:
-  catalog: analytics
-  schema: ab
-  table: fact_daily_assigned
+  catalog: abtest
+  schema: main
+  table: fact_daily_variant_metrics
 columns:
   - name: metric_date
     type: date
-  - name: user_id
-    type: varchar
   - name: experiment_id
     type: varchar
   - name: variant
     type: varchar
-    description: The arm the user was assigned to. 'control' is the baseline.
-  - name: country
-    type: varchar
-  - name: platform
-    type: varchar
+    description: The arm the day's activity belongs to. 'control' is the baseline.
   - name: phase
     type: varchar
     description: "'pre' is before the test started, 'test' is the test window."
+  - name: users
+    type: bigint
+    description: Assigned users active this day per arm. The denominator column.
   - name: sessions
     type: bigint
   - name: pageviews
-    type: bigint
-  - name: add_to_cart
     type: bigint
   - name: purchases
     type: bigint
   - name: revenue_usd
     type: double
-  - name: session_duration_s
-    type: double
+  - name: country
+    type: varchar
