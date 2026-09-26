@@ -33,4 +33,4 @@ abtest_data/
 
 # Temporary
 tmp/
-temp/
+temp/wren_connection.json

@@ -1,1 +1,0 @@
-{"datasource":"duckdb","path":"/opt/data/bq-nl2sql-agent/abtest_data/abtest.duckdb","schema_mappings":{"analytics.ab":"main"}}
