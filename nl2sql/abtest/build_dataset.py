@@ -707,6 +707,8 @@ def _build_scoresheet(conn, all_truth: Dict[str, Any]) -> None:
 
         # detail rows: per-day, per-variant; lifts stored NOT day-level (platform
         # computes lift per whole cut, not per day) -> detail lift columns NULL
+        # slice detail: one row per day x variant x country, from the assignment join
+        by_day_country = _country_cells(conn, exp_id, truth["started_on"], truth["ended_on"])
         for d in sorted(by_day):
             for v in variants:
                 vid = v["id"]
@@ -720,6 +722,24 @@ def _build_scoresheet(conn, all_truth: Dict[str, Any]) -> None:
                     round(_rate(cell["gmv"], cell["users"]), 6),
                     None, None,
                 ))
+            ds = d if isinstance(d, str) else d.isoformat()
+            for vname, cells_by_country in by_day_country.get(ds, {}).items():
+                for country, cell in cells_by_country.items():
+                    # iterate by variant NAME (view) — map through the ID contract
+                    vid = name_to_id.get(vname, vname)
+                    vmatch = [vv for vv in variants if vv["id"] == vid]
+                    if not vmatch:
+                        continue
+                    v = vmatch[0]
+                    rows.append((
+                        exp_id, d, vid, v["name"], 1 if vid == control_id else 0,
+                        country, "Overall", False,
+                        int(cell["users"]), int(cell["purchases"]), int(cell["atc"]),
+                        round(cell["gmv"], 2),
+                        round(_rate(cell["purchases"], cell["users"]), 6),
+                        round(_rate(cell["gmv"], cell["users"]), 6),
+                        None, None,
+                    ))
 
         # simpler: parameterized insert via arrow
         cols = ["experiment_id", "metric_date", "variant_id", "variant_nm", "is_control",
@@ -733,6 +753,30 @@ def _build_scoresheet(conn, all_truth: Dict[str, Any]) -> None:
         conn.execute(f"INSERT INTO exp_scoresheet ({joined}) SELECT {joined} FROM _stage_ss")
         conn.unregister("_stage_ss")
 
+
+
+
+
+def _country_cells(conn, exp_id: str, start: str, end: str) -> Dict[str, Dict[str, Dict[str, Dict[str, float]]]]:
+    """(day -> variant NAME -> country -> metric cells), from the joined facts."""
+    rows = conn.execute(
+        """
+        SELECT m.metric_date, f.variant, f.country,
+               COUNT(DISTINCT m.user_id), SUM(m.purchases), SUM(m.add_to_cart), SUM(m.revenue_usd)
+        FROM fact_daily_user_metrics m
+        JOIN fact_user_assignments f USING (user_id, experiment_id)
+        WHERE m.experiment_id = ? AND m.metric_date BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)
+        GROUP BY 1, 2, 3
+        """,
+        [exp_id, start, end],
+    ).fetchall()
+    out: Dict[str, Dict[str, Dict[str, Dict[str, float]]]] = {}
+    for d, vname, country, users, purch, atc, gmv in rows:
+        out.setdefault(str(d), {}).setdefault(vname, {}).setdefault(country, {})
+        out[str(d)][vname][country] = {
+            "users": users, "purchases": purch, "atc": atc, "gmv": gmv or 0.0,
+        }
+    return out
 
 
 def main() -> None:
