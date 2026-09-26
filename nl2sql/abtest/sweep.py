@@ -342,16 +342,14 @@ def sweep(db: str, experiment_id: str, registry_row: Dict[str, Any],
         res_dims = run_bq_query(
             f"SELECT 'slice_country' AS col, slice_country AS val FROM exp_scoresheet "
             f"WHERE experiment_id = '{exp_id}' AND NOT overall_flag AND slice_country != 'Overall' "
-            f"UNION SELECT 'slice_page', slice_page FROM exp_scoresheet "
+            f"UNION ALL SELECT 'slice_page' AS col, slice_page AS val FROM exp_scoresheet "
             f"WHERE experiment_id = '{exp_id}' AND NOT overall_flag AND slice_page != 'Overall'",
             db, row_limit=1000)
         if res_dims.ok:
             for col, val in res_dims.rows:
                 if col in slice_cols:
                     dims_present.setdefault(col, []).append(val)
-        else:
-            dims_present = {k: [v for v in vals if v != "Overall"]
-                            for k, vals in slice_cols.items()}
+        # discovery failure above already leaves dims_present empty => fail closed
     for m in metrics_used:
         for v in treatments:
             vid = v["id"]

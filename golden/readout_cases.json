@@ -1,0 +1,140 @@
+{
+ "truth": [
+  {
+   "id": "T1",
+   "case": "checkout pricing: SRM clean at 50/25/25",
+   "exp": "checkout_flow_v2",
+   "check": "srm.detected == false"
+  },
+  {
+   "id": "T2",
+   "case": "onboarding SRM trap fires (62/38)",
+   "exp": "onboarding_email_v1",
+   "check": "srm.detected == true AND decision.verdict == HOLD"
+  },
+  {
+   "id": "T3",
+   "case": "pricing null effect -> NO-WINNER",
+   "exp": "pricing_page_copy_v3",
+   "check": "decision.verdict in (NO-WINNER)"
+  },
+  {
+   "id": "T4",
+   "case": "checkout FR slice t1 gmv lift ~ +27% (truth 27.7)",
+   "exp": "checkout_flow_v2",
+   "check": "0.10 < cut[slice=FR,variant=t1,metric=gmv_per_user].lift < 0.45"
+  },
+  {
+   "id": "T5",
+   "case": "checkout US slice t1 lift direction positive",
+   "exp": "checkout_flow_v2",
+   "check": "cut[slice=US,variant=t1,metric=gmv_per_user].lift > 0"
+  },
+  {
+   "id": "T6",
+   "case": "pooled gmv_per_user t1 within truth band",
+   "exp": "checkout_flow_v2",
+   "check": "0.10 < headline.gmv_per_user.t1.lift < 0.35"
+  },
+  {
+   "id": "T7",
+   "case": "pooled purch_per_user t1 within truth band",
+   "exp": "checkout_flow_v2",
+   "check": "0.05 < headline.purch_per_user.t1.lift < 0.20"
+  },
+  {
+   "id": "T8",
+   "case": "content hash present & stable (rerun same dict)",
+   "exp": "checkout_flow_v2",
+   "check": "hash(run1) == hash(run2)"
+  },
+  {
+   "id": "T9",
+   "case": "cuts bound: exactly 3 metrics x 2 variants x (3 countries + pdp + 2 overall) per exp",
+   "exp": "checkout_flow_v2",
+   "check": "len(cuts) == 24 not counting dup rows"
+  },
+  {
+   "id": "T10",
+   "case": "onboarding t1 purch lift within truth band (+14%)",
+   "exp": "onboarding_email_v1",
+   "check": "0.08 < headline...t1... < 0.30"
+  }
+ ],
+ "trap": [
+  {
+   "id": "X1",
+   "case": "Overall+detail mixing: slice='Overall' excluded from detail sums",
+   "exp": "checkout_flow_v2",
+   "check": "headline gmv t1 lift must equal truth scale (~+23%), NOT the 2x contaminated +131%"
+  },
+  {
+   "id": "X2",
+   "case": "gmv_tot_lift column: readout must not mix a per-user lift with a total-sounding name into a dollar computation",
+   "exp": "checkout_flow_v2",
+   "check": "no decision reason contains pooled dollar totals"
+  },
+  {
+   "id": "X3",
+   "case": "wrong slice: country=JP claimed as US lift",
+   "exp": "checkout_flow_v2",
+   "check": "cuts[slice=US].lift != cuts[slice=JP].lift (distinct)"
+  },
+  {
+   "id": "X4",
+   "case": "sub-window lift: 7-day window differs from 56-day (ramp sensitivity)",
+   "exp": "checkout_flow_v2",
+   "check": "lift(last 7d) != lift(full window) (both reported)"
+  },
+  {
+   "id": "X5",
+   "case": "double-count guard: slice sums == Overall detail (reconciliation)",
+   "exp": "checkout_flow_v2",
+   "check": "SUM(slice_country=FR) == overall detail for that day, variant"
+  },
+  {
+   "id": "X6",
+   "case": "SUM(users) per day never COUNT(*) (daily-grain sum, not row count)",
+   "exp": "checkout_flow_v2",
+   "check": "observed users in SRM == assignment counts (15037/7502/7461 pattern; 0.501/0.250/0.249)"
+  }
+ ],
+ "refusal": [
+  {
+   "id": "R1",
+   "case": "unknown experiment -> fail closed",
+   "exp": "(none)",
+   "check": "sweep raises/wraps RegistryError"
+  },
+  {
+   "id": "R2",
+   "case": "unknown metric in METRICS map -> fail closed",
+   "exp": "checkout_flow_v2",
+   "check": "sweep rejects unknown metric"
+  },
+  {
+   "id": "R3",
+   "case": ">90d window clamp",
+   "exp": "checkout_flow_v2",
+   "check": "window clipped to registry end, recorded"
+  },
+  {
+   "id": "R4",
+   "case": "no intended shares + no ground truth -> SRM skipped with note, never guessed",
+   "exp": "checkout_flow_v2",
+   "check": "srm source note present or error"
+  },
+  {
+   "id": "R5",
+   "case": "empty slice request for nonexistent country -> zero cuts, no invented rows",
+   "exp": "checkout_flow_v2",
+   "check": "slices={'slice_country': ['ZZ']} -> 0 slice cuts"
+  },
+  {
+   "id": "R6",
+   "case": "cross-experiment denial (two experiments in one question)",
+   "exp": "checkout_flow_v2",
+   "check": "sweep signature takes exactly one experiment_id; no way to mix"
+  }
+ ]
+}
