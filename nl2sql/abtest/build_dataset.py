@@ -37,6 +37,15 @@ import numpy as np
 
 SEED = 20260925
 
+
+def _variant_id(name: str, idx: int) -> str:
+    """Stable arm keys per the platform contract: control -> ctl, others -> t1/t2."""
+    if name == "control":
+        return "ctl"
+    return f"t{idx}"  # treatment_b -> t1, treatment_c -> t2
+
+
+
 COUNTRIES = {
     "US": 0.34, "GB": 0.16, "DE": 0.14, "FR": 0.11, "JP": 0.09, "BR": 0.09, "IN": 0.07,
 }
@@ -360,6 +369,14 @@ def _build_one(exp: ExperimentSpec, rng: np.random.Generator) -> Dict[str, Any]:
         "guardrail_tolerance": exp.guardrail_tolerance,
         "intended_shares": exp.intended_shares,
         "n_users": n,
+        "n_days": exp.n_days,
+        "pre_days": exp.pre_days,
+        "started_on": None,   # filled by build() once dates are fixed
+        "ended_on": None,
+        "variants": [          # ordered, control first (is_control contract)
+            {"id": ("ctl" if v.name == "control" else ("t1" if i == 1 else "t2")), "name": v.name}
+            for i, v in enumerate(exp.variants)
+        ],
         "true_lift_vs_control": {
             v.name: {
                 "purchase_rate": v.true_purchase_lift,
@@ -543,7 +560,14 @@ def build(out_dir: str, scale: float = 1.0) -> Dict[str, Any]:
     summary: List[Dict[str, Any]] = []
     for exp in EXPERIMENTS:
         if scale != 1.0:
-            exp = ExperimentSpec(**{**asdict(exp), "n_users": max(400, int(exp.n_users * scale))})
+            # asdict(exp) recursively converts VariantSpec objects into dicts;
+            # rebuilding with ** would hand _build_one dicts where it expects
+            # VariantSpec. Only the scalar fields are scaled — keep everything else.
+            scalar = {k: v for k, v in asdict(exp).items() if k != "variants"}
+            exp = ExperimentSpec(
+                variants=exp.variants,
+                **{**scalar, "n_users": max(400, int(exp.n_users * scale))},
+            )
         built = _build_one(exp, rng)
         e: ExperimentSpec = built["experiment"]
 
@@ -557,7 +581,10 @@ def build(out_dir: str, scale: float = 1.0) -> Dict[str, Any]:
         )
         _insert("fact_user_assignments", built["assignments"])
         _insert("fact_daily_user_metrics", built["metrics"])
-        all_truth[e.experiment_id] = built["ground_truth"]
+        gt = built["ground_truth"]
+        gt["started_on"] = start.isoformat()
+        gt["ended_on"] = end.isoformat()
+        all_truth[e.experiment_id] = gt
         summary.append(
             {
                 "experiment_id": e.experiment_id,
@@ -574,10 +601,138 @@ def build(out_dir: str, scale: float = 1.0) -> Dict[str, Any]:
 
     for name, body in VIEWS:
         conn.execute(f"CREATE VIEW {name} AS {body}")
+    _build_scoresheet(conn, all_truth)
     conn.close()
 
     truth_path.write_text(json.dumps({"seed": SEED, "experiments": all_truth}, indent=2) + "\n", encoding="utf-8")
     return {"db_path": str(db_path), "ground_truth": str(truth_path), "experiments": summary}
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# exp_scoresheet: the production-shaped precomputed-cut layer (17 col contract)
+# ---------------------------------------------------------------------------
+# One row per (experiment, metric_date, variant_id, slice). Outcome totals are
+# event-day values; per-user rates and lifts are PRECOMPUTED by the platform
+# (pooled sum-ratio semantics, not recomputable upstream) and marked never-sum.
+# Slides: P13N-style slice dims become (country, page); 'Overall' marker rows
+# carry the whole-test cut per variant so the platform serves them instantly.
+
+SCORESHEET_DDL = """
+CREATE TABLE exp_scoresheet (
+    experiment_id   VARCHAR NOT NULL,
+    metric_date     DATE,               -- snapshot date (NULL on Overall rows)
+    variant_id      VARCHAR NOT NULL,   -- stable arm key (ctl / t1 / t2)
+    variant_nm      VARCHAR NOT NULL,   -- display label only
+    is_control      INTEGER NOT NULL,   -- 1 = baseline; from config, never inferred
+    slice_country   VARCHAR NOT NULL,   -- 'Overall' = all countries
+    slice_page      VARCHAR NOT NULL,   -- 'Overall' = all pages
+    overall_flag    BOOLEAN NOT NULL,   -- TRUE = whole-test rollup row
+    users           BIGINT  NOT NULL,   -- denominator; never-sum (window uncertain)
+    purchases       BIGINT  NOT NULL,   -- safe to sum ONLY across disjoint slices
+    add_to_cart     BIGINT  NOT NULL,   -- same
+    gmv             DOUBLE  NOT NULL,   -- same (decimal in production)
+    purch_per_user  DOUBLE  NOT NULL,   -- precomputed pooled rate; never sum
+    gmv_per_user    DOUBLE  NOT NULL,   -- the north star, precomputed; never sum
+    purch_lift      DOUBLE,             -- vs matching control, fraction; t rows only
+    gmv_tot_lift    DOUBLE              -- TRAP: name says total; IS per-user lift
+)
+"""
+
+
+def _build_scoresheet(conn, all_truth: Dict[str, Any]) -> None:
+    """Materialize the precomputed-cut layer from the daily truth tables."""
+    conn.execute(SCORESHEET_DDL)
+
+    for exp_id, truth in all_truth.items():
+        started_on = date.fromisoformat(truth["started_on"])
+        ended_on = date.fromisoformat(truth["ended_on"])
+        variants = truth["variants"]          # ordered, control first
+        control_id = variants[0]["id"]
+
+        daily = conn.execute(
+            """
+            SELECT metric_date, variant, SUM(users) AS users, SUM(purchases) AS purchases,
+                   SUM(add_to_cart) AS atc, SUM(revenue_usd) AS gmv
+            FROM fact_daily_variant_metrics
+            WHERE experiment_id = ?
+              AND metric_date BETWEEN ? AND ?
+            GROUP BY 1, 2
+            ORDER BY 1, 2
+            """,
+            [exp_id, truth["started_on"], truth["ended_on"]],
+        ).fetchall()
+
+        # daily rows key by variant NAME (view column); truth uses stable IDs.
+        # Map name->id once so all lookups go through the ID contract.
+        name_to_id = {v["name"]: v["id"] for v in variants}
+        by_day: Dict[date, Dict[str, Dict[str, float]]] = {}
+        for d, v, u, p, a, g in daily:
+            by_day.setdefault(d, {})[name_to_id[v]] = {"users": u, "purchases": p, "atc": a, "gmv": g}
+
+        rows = []
+
+        def _rate(num, den):
+            return (num / den) if den else 0.0
+
+        # precompute the whole-test cut first: lifts need the control totals
+        tot: Dict[str, Dict[str, float]] = {}
+        for v in variants:
+            vid = v["id"]
+            users = sum(by_day.get(d, {}).get(vid, {}).get("users", 0) for d in by_day)
+            purch = sum(by_day.get(d, {}).get(vid, {}).get("purchases", 0) for d in by_day)
+            atc = sum(by_day.get(d, {}).get(vid, {}).get("atc", 0) for d in by_day)
+            gmv = sum(by_day.get(d, {}).get(vid, {}).get("gmv", 0.0) for d in by_day)
+            tot[vid] = {"users": users, "purchases": purch, "atc": atc, "gmv": gmv}
+
+        for v in variants:
+            vid = v["id"]
+            is_ctl = 1 if vid == control_id else 0
+            t = tot[vid]
+            rows.append((
+                exp_id, None, vid, v["name"], is_ctl,
+                "Overall", "Overall", True,
+                int(t["users"]), int(t["purchases"]), int(t["atc"]), round(t["gmv"], 2),
+                round(_rate(t["purchases"], t["users"]), 6),
+                round(_rate(t["gmv"], t["users"]), 6),
+                None if is_ctl else round(
+                    (t["purchases"] / tot[control_id]["purchases"]) /
+                    (t["users"] / tot[control_id]["users"]) - 1.0, 6) if t["users"] else None,
+                None if is_ctl else round(
+                    (t["gmv"] / t["users"]) / (tot[control_id]["gmv"] / tot[control_id]["users"]) - 1.0, 6)
+                if t["users"] else None,
+            ))
+
+        # detail rows: per-day, per-variant; lifts stored NOT day-level (platform
+        # computes lift per whole cut, not per day) -> detail lift columns NULL
+        for d in sorted(by_day):
+            for v in variants:
+                vid = v["id"]
+                cell = by_day[d].get(vid, {"users": 0, "purchases": 0, "atc": 0, "gmv": 0.0})
+                rows.append((
+                    exp_id, d, vid, v["name"], 1 if vid == control_id else 0,
+                    "Overall", "Overall", False,
+                    int(cell["users"]), int(cell["purchases"]), int(cell["atc"]),
+                    round(cell["gmv"], 2),
+                    round(_rate(cell["purchases"], cell["users"]), 6),
+                    round(_rate(cell["gmv"], cell["users"]), 6),
+                    None, None,
+                ))
+
+        # simpler: parameterized insert via arrow
+        cols = ["experiment_id", "metric_date", "variant_id", "variant_nm", "is_control",
+                "slice_country", "slice_page", "overall_flag", "users", "purchases",
+                "add_to_cart", "gmv", "purch_per_user", "gmv_per_user",
+                "purch_lift", "gmv_tot_lift"]
+        pa = _pyarrow()
+        tbl = pa.Table.from_pylist([dict(zip(cols, r)) for r in rows])
+        conn.register("_stage_ss", tbl)
+        joined = ", ".join(cols)
+        conn.execute(f"INSERT INTO exp_scoresheet ({joined}) SELECT {joined} FROM _stage_ss")
+        conn.unregister("_stage_ss")
+
 
 
 def main() -> None:

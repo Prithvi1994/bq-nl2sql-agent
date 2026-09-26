@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS dim_experiment_registry (
     variants        VARCHAR,          -- 'control,treatment_a,treatment_b'
     metric_columns  VARCHAR,          -- 'users,sessions,pageviews,purchases,revenue_usd'
     dimension_columns VARCHAR,        -- 'country,platform'
-    primary_metric  VARCHAR,
+    north_star_metric VARCHAR,        -- the headline KPI; narration reads verdicts on it
     guardrail_metric VARCHAR,
     ship_threshold  DOUBLE,
     guardrail_tolerance DOUBLE
@@ -80,7 +80,7 @@ def register(
     variants: Sequence[str] = (),
     metric_columns: Sequence[str] = (),
     dimension_columns: Sequence[str] = (),
-    primary_metric: str = "",
+    north_star_metric: str = "",
     guardrail_metric: str = "",
     ship_threshold: Optional[float] = None,
     guardrail_tolerance: Optional[float] = None,
@@ -109,7 +109,7 @@ def register(
                 identifier, domain, name or experiment_id, table, schema,
                 started_on or None, ended_on or None,
                 ",".join(variants), ",".join(metric_columns),
-                ",".join(dimension_columns), primary_metric, guardrail_metric,
+                ",".join(dimension_columns), north_star_metric, guardrail_metric,
                 ship_threshold, guardrail_tolerance,
             ],
         )
@@ -121,7 +121,7 @@ def _rows(db_path: str) -> List[Dict[str, Any]]:
     ensure_registry(db_path)
     res = run_bq_query(
         "SELECT experiment_id, domain, name, table_name, schema, started_on, ended_on, "
-        "variants, metric_columns, dimension_columns, primary_metric, guardrail_metric, "
+        "variants, metric_columns, dimension_columns, north_star_metric, guardrail_metric, "
         "ship_threshold, guardrail_tolerance FROM dim_experiment_registry",
         db_path, row_limit=10_000,
     )
@@ -129,7 +129,7 @@ def _rows(db_path: str) -> List[Dict[str, Any]]:
         raise RegistryError(f"registry unreadable: {res.error}")
     cols = ["experiment_id", "domain", "name", "table_name", "schema",
             "started_on", "ended_on", "variants", "metric_columns",
-            "dimension_columns", "primary_metric", "guardrail_metric",
+            "dimension_columns", "north_star_metric", "guardrail_metric",
             "ship_threshold", "guardrail_tolerance"]
     return [dict(zip(cols, r)) for r in res.rows]
 

@@ -1,497 +1,72 @@
 # bq-nl2sql-agent
 
-BigQuery-compatible Natural Language to SQL agent with **grounded evaluation**, **local testing via DuckDB**, **LangGraph report generation**, **auto-grader eval loop**, and **production-ready BigQuery backend**.
+Agentic **experiment readout platform**: natural-language chat over A/B test
+scoresheets, with the semantic layer generated once and the numbers computed
+deterministically — the LLM parses intent and narrates, never authoring SQL on
+the primary path.
 
 ## What Is This
 
-A standalone NL2SQL agent built from the ground up, incorporating battle-tested patterns from open-source projects:
-
-- **Text-to-SQL core** — Schema-grounded generation, sqlglot guard, bounded repair loop
-- **Report generation** — LangGraph pipeline with automated grader (groundedness, faithfulness, factual_precision, completeness, style)
-- **Multi-backend** — DuckDB for local testing, BigQuery for production
-- **Eval-first** — Execution accuracy + result match + judge rescue + report quality metrics
-
-## Quick Start (Local Testing)
-
-```bash
-# Clone and install
-git clone https://github.com/Prithvi1994/bq-nl2sql-agent.git
-cd bq-nl2sql-agent
-pip install -e .
-
-# Or just install dependencies
-pip install duckdb sqlglot openai pydantic python-dotenv
-
-# Run a question against the sample data
-python -m nl2sql.cli_local --question "Total revenue by country"
-
-# Or with custom data
-python -m nl2sql.cli_local --question "Top 5 customers" --data-dir ./my_data --model gpt-4o
-```
-
-## Sample Data
-
-The repo includes sample CSV files in `./data/`:
-- `customers.csv` - 8 customers
-- `orders.csv` - 10 orders
-- `products.csv` - 10 products
-- `order_items.csv` - 13 line items
-
-## What Questions Can You Ask?
-
-The agent handles a wide range of analytical questions. Here are categories with examples:
-
-### **Aggregations & Metrics**
-```bash
-python -m nl2sql.cli_local -q "Total revenue by country"
-python -m nl2sql.cli_local -q "Average order value by country"
-python -m nl2sql.cli_local -q "Total revenue by product category"
-python -m nl2sql.cli_local -q "Number of orders per month"
-python -m nl2sql.cli_local -q "Average items per order"
-```
-
-### **Top-N & Rankings**
-```bash
-python -m nl2sql.cli_local -q "Which customer spent the most?"
-python -m nl2sql.cli_local -q "Top 5 products by revenue"
-python -m nl2sql.cli_local -q "Best selling category"
-python -m nl2sql.cli_local -q "Most frequent customers"
-```
-
-### **Filtering & Segmentation**
-```bash
-python -m nl2sql.cli_local -q "List all electronics products with their prices"
-python -m nl2sql.cli_local -q "Orders over $500 in the last 30 days"
-python -m nl2sql.cli_local -q "Customers from USA who ordered electronics"
-python -m nl2sql.cli_local -q "Pending orders from UK customers"
-```
-
-### **Joins & Relationships**
-```bash
-python -m nl2sql.cli_local -q "What products were in order 1001?"
-python -m nl2sql.cli_local -q "Which customers bought laptops?"
-python -m nl2sql.cli_local -q "Products never ordered"
-python -m nl2sql.cli_local -q "Customer order history with product names"
-```
-
-### **Complex Analytics**
-```bash
-python -m nl2sql.cli_local -q "Revenue by country and category"
-python -m nl2sql.cli_local -q "Customer lifetime value"
-python -m nl2sql.cli_local -q "Month-over-month revenue growth"
-python -m nl2sql.cli_local -q "Repeat purchase rate by country"
-```
-
-### **Set Operations & Existence**
-```bash
-python -m nl2sql.cli_local -q "Customers who haven't placed any orders"
-python -m nl2sql.cli_local -q "Products that were never sold"
-python -m nl2sql.cli_local -q "Countries with no completed orders"
-```
-
-### **Date/Time Analysis** (if your data has dates)
-```bash
-python -m nl2sql.cli_local -q "Orders in June 2023"
-python -m nl2sql.cli_local -q "Revenue trend over time"
-python -m nl2sql.cli_local -q "First order date per customer"
-```
-
-## Configuration: API Keys
-
-The agent auto-detects your provider from environment variables:
-
-| Provider | Environment Variable | Example Models |
-|----------|---------------------|----------------|
-| **OpenAI** | `OPENAI_API_KEY` | `gpt-4o-mini`, `gpt-4o`, `gpt-4-turbo` |
-| **Anthropic** | `ANTHROPIC_API_KEY` | `claude-3-5-sonnet`, `claude-3-opus`, `claude-3-haiku` |
-| **OpenRouter** | `OPENROUTER_API_KEY` | `nemotron-3-ultra`, `pareto-code`, `deepseek-v3`, `llama-3.1-70b`, `qwen-2.5-coder`, `gemma-2-9b` |
-
-```bash
-# Set your key
-export OPENAI_API_KEY="sk-..."           # OpenAI
-export ANTHROPIC_API_KEY="sk-ant-..."    # Anthropic (via OpenRouter)
-export OPENROUTER_API_KEY="sk-or-..."    # OpenRouter
-
-# Run with auto-detection
-python -m nl2sql.cli_local -q "Total revenue by country"
-
-# Or specify model explicitly
-python -m nl2sql.cli_local -q "Top customers" --model gpt-4o-mini
-python -m nl2sql.cli_local -q "Top customers" --model claude-3-5-sonnet
-python -m nl2sql.cli_local -q "Top customers" --model nemotron-3-ultra
-```
-
-### **Free Models on OpenRouter** (no API key required for some)
-
-| Short Name | Full Model ID | Best For |
-|------------|---------------|----------|
-| `nemotron-3-ultra` | `nvidia/nemotron-3-ultra-550b-a55b:free` | SQL generation (default) |
-| `nemotron-3.5-lightning` | `nvidia/nemotron-3.5-lightning:free` | Fast reasoning |
-| `deepseek-v4-flash` | `deepseek/deepseek-v4-flash-0731:free` | **Grading/eval** (fast, free) |
-| `inkling` | `thinkingmachines/inkling:free` | Evaluation |
-
-```bash
-python -m nl2sql.cli_local -q "Total revenue by country" --model nemotron-3-ultra
-python -m nl2sql.cli_local -q "Total revenue by country" --model deepseek-v4-flash
-```
-
-## Using Your Own Data
-
-Place CSV, Parquet, or JSON files in a directory:
-
-```
-my_data/
-├── customers.csv
-├── orders.csv
-├── products.csv
-└── order_items.csv
-```
-
-```bash
-python -m nl2sql.cli_local --question "Revenue by customer" --data-dir ./my_data
-```
-
-**Supported formats:**
-- `.csv` — Auto-detects types, headers
-- `.parquet` — Preserves types exactly
-- `.json` / `.jsonl` — Line-delimited or array
-
-## Running the Evaluation Suite
-
-The evaluation harness scores on three metrics:
-
-1. **Execution Success** — SQL ran without error
-2. **Result Match** — Candidate rows == Reference rows (order-insensitive, normalized)
-3. **Judge Rescue** — LLM judge says "candidate answers question as well as reference" (used only when result match fails)
-
-### Run Local Evaluation (DuckDB)
-
-```bash
-# Using the test script with golden test cases
-python test_eval.py
-```
-
-Expected output:
-```
-# NL2SQL evaluation: mock:golden
-
-| Metric                    | Value  |
-|---------------------------|--------|
-| Execution success         | 100%   |
-| Result match (deterministic)| 100%  |
-| Judge-rescued cases       | 0      |
-| Accepted (match or judged)| 100%   |
-| Median latency per query  | 33 ms  |
-```
-
-### Run Evaluation with Real LLM
-
-```bash
-# Set your API key
-export OPENROUTER_API_KEY="sk-or-..."
-
-# Run evaluation (uses OpenRouter for judge rescue)
-python -c "
-from nl2sql.evaluate import load_golden, evaluate
-from nl2sql.agent import NL2SQLAgent
-from nl2sql.schema_adapters import LocalFileSchema
-from nl2sql.executor_duckdb import run_query_duckdb
-from nl2sql.llm import create_llm
-
-schema = LocalFileSchema.from_data_dir('./data')
-golden = load_golden('golden/local_test.json')
-
-llm = create_llm('nemotron-3-ultra')
-agent = NL2SQLAgent(
-    db_path=':memory:',
-    llm=llm,
-    schema=schema,
-    executor=lambda db, sql, **kw: run_query_duckdb(sql, data_dir='./data', **kw),
-)
-
-report = evaluate(agent, golden, judge=llm)
-print(report.to_markdown())
-"
-```
-
-### Custom Golden Test Cases
-
-Add your own test cases to `golden/local_test.json`:
-
-```json
-[
-  {
-    "id": "custom-1",
-    "question": "Your business question",
-    "sql": "SELECT ... FROM ... WHERE ...",
-    "tags": ["join", "aggregation"]
-  }
-]
-```
-
-Then run:
-```bash
-python test_eval.py
-```
-
-## Report Quality Evaluation (New!)
-
-Evaluate report generation quality using **deepseek-v4-flash** (free, fast) as judge:
-
-```bash
-# Run report quality evaluation
-python eval_reports.py --golden golden/reports.json --verbose
-
-# Output to file
-python eval_reports.py --golden golden/reports.json --output eval_results.json
-```
-
-**What it evaluates:**
-- **Groundedness** — Every claim supported by source data
-- **Faithfulness** — No contradictions with source data
-- **Factual Precision** — Numbers match source exactly
-- **Completeness** — Covers totals, trends, outliers, methodology
-- **Style Adherence** — Matches requested format
-
-**Expected output:**
-```
-Evaluating 5 cases with deepseek-v4-flash judge...
-------------------------------------------------------------
-  [report-1] approve (score: 0.95) - 8.2s
-  [report-2] approve (score: 0.92) - 7.1s
-  ...
-
-============================================================
-EVALUATION SUMMARY
-============================================================
-Total cases:      5
-Approved:         4
-Revised:          1
-Rejected:         0
-Errors:           0
-Avg score:        0.91
-Total time:       42.3s
-============================================================
-```
-
-### Golden Report Test Cases
-
-Add test cases to `golden/reports.json`:
-
-```json
-[
-  {
-    "id": "report-1",
-    "question": "Total revenue by country",
-    "sql": "SELECT c.country, SUM(o.total_amount) as revenue FROM customers c JOIN orders o ON c.customer_id = o.customer_id WHERE o.status = 'completed' GROUP BY c.country ORDER BY revenue DESC",
-    "style": "executive_summary",
-    "tags": ["aggregation", "join", "group_by"]
-  }
-]
-```
-
-## Report Generation Pipeline
-
-The project includes a **LangGraph-based report generation pipeline** with auto-grader eval loop:
-
-```bash
-# Generate a report
-python -c "
-from nl2sql.report_graph import run_report_generation, ReportStyle
-
-report = run_report_generation(
-    question='Total revenue by country',
-    style=ReportStyle.EXECUTIVE,
-    model='gpt-4o-mini',
-    data_dir='./data',
-)
-print(report['summary'])
-"
-```
-
-### Report Styles
-
-| Style | Sections | Use Case |
-|-------|----------|----------|
-| `executive_summary` | 2-3 | Leadership updates, KPI dashboards |
-| `detailed_analysis` | 4-6 | Deep dives, segment breakdowns |
-| `technical_brief` | 3-4 | Reproducibility, query logic, data quality |
-| `slide_deck` | 5-8 slides | Presentations, stakeholder meetings |
-
-### Auto-Grader Eval Loop
-
-The pipeline includes an **automated grader** that evaluates:
-- **Groundedness** — Every claim supported by source data
-- **Faithfulness** — No contradictions with source data
-- **Factual Precision** — Numbers match source exactly
-- **Completeness** — Covers totals, trends, outliers, methodology
-- **Style Adherence** — Matches requested format
-
-The grader replaces human-in-the-loop with automated evaluation:
-```
-generate_report → auto_grader → [APPROVE → finalize | REVISE → revise_report → auto_grader (loop) | REJECT → handle_error]
-```
-
-**Local runs:** Auto-approves to avoid multiple LLM calls/timeouts  
-**Production:** Set `enable_human_review=True` or use `grade_report()` directly for full evaluation
-
-## Production: BigQuery Backend
-
-```bash
-# Install BigQuery extras
-pip install -e ".[bigquery]"
-
-# Set credentials
-export GOOGLE_APPLICATION_CREDENTIALS=/path/to/sa.json
-
-# Use BigQuery schema and executor
-from nl2sql.schema_adapters import BigQuerySchema
-from nl2sql.executor_bigquery import run_query_bigquery
-
-schema = BigQuerySchema.from_bigquery(project="my-proj", dataset="my_dataset")
-agent = NL2SQLAgent(..., schema=schema, executor=run_query_bigquery)
-```
+A platform for reading out online controlled experiments from pre-computed
+scoresheet tables (one row per experiment × day × variant × slice):
+
+- **Experiment registry** — domain → experiment → physical table; identity
+  resolution precedes any query; fail-closed on unknown ids
+- **Wren MDL + cube** — the cut catalog: executable metric definitions with
+  sum-safety (outcome totals pool across disjoint slices; precomputed rates
+  and lifts are read, never aggregated)
+- **Deterministic readout** — headline from stored cuts, day-level confidence
+  intervals, SRM gate, ramp/segment sweeps, ship/hold decision rule
+- **LLM at the edges only** — intent slots in, fixed-order narration out;
+  guarded raw-SQL escape hatch behind an sqlglot AST policy gate
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      NL2SQLAgent                             │
-├─────────────────────────────────────────────────────────────┤
-│  Schema (LocalFileSchema | BigQuerySchema)                  │
-│  Guard (sqlglot dialect: sqlite/bigquery)                   │
-│  Executor (DuckDB local | BigQuery remote)                  │
-│  LLM (OpenAI-compatible: OpenAI, Anthropic, OpenRouter)     │
-└─────────────────────────────────────────────────────────────┘
+NL question → intent slots {experiment, metric, slice?, window, grain}
+            → registry resolve (the only sanctioned table source)
+            → readout() sweep — deterministic dict, no LLM near a number
+            → narration (fixed section order, every figure from the dict)
+            → agentic chat shell (deepagents; tools discover/resolve/readout)
 ```
 
-### Core Components
+## Quick Start
 
-| File | Purpose |
-|------|---------|
-| `agent.py` | Main agent loop: generate → guard → execute → repair |
-| `guard.py` | SQL validation via sqlglot (dialect-aware) |
-| `schema_adapters.py` | Schema introspection (local files / BigQuery) |
-| `executor_duckdb.py` | Local execution on CSV/Parquet via DuckDB |
-| `executor_bigquery.py` | Production BigQuery execution (optional) |
-| `evaluate.py` | Grounded eval harness (execution + result match + judge) |
-| `report_graph.py` | LangGraph report pipeline with auto-grader |
-| `prompts.py` | Generation/repair/judge/grader prompts |
-| `cli_local.py` | Zero-setup local testing CLI |
+```bash
+pip install -e . && pip install duckdb numpy scipy pyarrow
 
-## Architecture & Design Decisions
+# Build the fixture dataset + scoresheet layer
+python -m nl2sql.abtest.build_dataset --out ./abtest_data
 
-**This project uses neither LangGraph nor ADK for the core agent** — it's a lightweight, transparent agent loop (`agent.py`) that you fully own and understand.
+# Register experiments (registry + per-experiment tables)
+python -m nl2sql.abtest.register_fixture
 
-- **No framework lock-in** — ~300 lines of core logic
-- **Easy to extend** — swap LLM, schema, executor, guard independently
-- **Grounded eval built-in** — not an afterthought
-
-**LangGraph is used only for the report generation pipeline** where its state machine shines:
-- Multi-step generation with quality gates
-- Auto-grader feedback loops
-- Human-in-the-loop checkpoints
-- Checkpointing and observability
-
-Use **LangGraph** if you need:
-- Complex multi-agent orchestration
-- Human-in-the-loop approvals
-- Stateful long-running workflows
-- Visual debugging
-
-Use **ADK (Agent Development Kit)** if you need:
-- Google Cloud native integration
-- Vertex AI model routing
-- Built-in eval tracing to Cloud Logging
-
-For a **focused NL2SQL agent with grounded eval**, this minimal loop is faster to iterate and easier to audit.
-
-## Production Readiness Checklist
-
-| Component | Status | Notes |
-|-----------|--------|-------|
-| **Core SQL agent** | ✅ Production-ready | Tested, grounded, bounded repair |
-| **DuckDB executor** | ✅ Production-ready | Local testing, CI/CD |
-| **BigQuery executor** | ✅ Available | Requires `.[bigquery]` extras + GCP credentials |
-| **SQL guard (sqlglot)** | ✅ Production-ready | Dialect-aware, injection prevention |
-| **Schema introspection** | ✅ Production-ready | FK join paths, column types |
-| **Eval harness** | ✅ Production-ready | Execution + Result Match + Judge |
-| **Report pipeline** | ⚠️ Beta | Auto-approve for local; full grader for CI |
-| **Report grader** | ✅ Working | deepseek-v4-flash (free, fast) |
-| **Batch report eval** | ✅ Available | `eval_reports.py` |
-| **CI/CD integration** | ⚠️ Add GitHub Actions | Template in `.github/workflows/` |
-
-## Project Structure
-
-```
-bq-nl2sql-agent/
-├── nl2sql/
-│   ├── __init__.py
-│   ├── agent.py              # Core agent loop
-│   ├── evaluate.py           # Grounded evaluation harness
-│   ├── guard.py              # SQL validation (sqlglot)
-│   ├── llm.py                # LLM abstraction + auto-provider
-│   ├── prompts.py            # Generation/repair/judge/grader prompts
-│   ├── schema.py             # Base Schema interface (FK joins)
-│   ├── schema_adapters.py    # LocalFileSchema, BigQuerySchema
-│   ├── executor.py           # Base executor interface
-│   ├── executor_duckdb.py    # Local DuckDB executor
-│   ├── executor_bigquery.py  # Production BigQuery executor
-│   ├── examples.py           # Few-shot example bank
-│   ├── cli_local.py          # Local testing CLI
-│   └── report_graph.py       # LangGraph report pipeline
-├── data/                     # Sample CSV files
-├── golden/                   # Evaluation test cases (40 SQL + 5 report)
-├── tests/                    # Unit tests
-├── eval_reports.py           # Report quality batch evaluation
-├── pyproject.toml
-├── README.md
-├── LICENSE
-└── NOTICE
+# Regression: the readout must recover the known ground truth (26/26)
+python -m nl2sql.abtest.verify
 ```
 
-## Grounded Evaluation Details
+## Layout
 
-The `evaluate.py` harness scores three ways:
+```
+nl2sql/
+├── bq_exec.py              # BigQuery-dialect executor over the DuckDB mirror
+└── abtest/
+    ├── build_dataset.py    # statistically-honest 3-experiment fixture + scoresheet
+    ├── register_fixture.py # registry seeding (the onboarding path)
+    ├── registry.py         # domain → experiment → table, fail-closed
+    ├── policy.py           # sqlglot-AST SQL gate (escape hatch + slice rules)
+    ├── stats.py            # SRM, lift, Wilson CI, Welch t, CUPED, decision rule
+    ├── readout.py          # readout sweep: headline/ramp/segments/gates
+    ├── verify.py           # effect-recovery regression suite
+    └── wren_project/       # 1 MDL model + 1 cube + population rules
+```
 
-1. **Execution Success** — SQL ran without error
-2. **Result Match** — Candidate rows == Reference rows (order-insensitive, normalized)
-3. **Judge Rescue** — LLM judge says "candidate answers question as well as reference" (used only when result match fails)
+## Eval philosophy
 
-Primary metric: **Result Match** (deterministic, reproducible).
-
-## Report Quality Evaluation
-
-The `report_graph.py` grader evaluates reports across five dimensions:
-
-1. **Groundedness** (0-1) — Every claim supported by source data
-2. **Faithfulness** (0-1) — No contradictions with source data
-3. **Factual Precision** (0-1) — Numbers match source exactly
-4. **Completeness** (0-1) — Covers totals, trends, outliers, methodology
-5. **Style Adherence** (0-1) — Matches requested format
-
-Decision thresholds:
-- **APPROVE**: overall ≥ 0.85 AND all dimensions ≥ 0.7
-- **REVISE**: overall ≥ 0.6 OR any dimension < 0.7
-- **REJECT**: overall < 0.6 OR factual_precision < 0.5 OR groundedness < 0.5
-
-## Attribution
-
-This project incorporates code from:
-
-1. **nl2sql-agent** by gandhiashutosh14 (MIT License)
-   https://github.com/gandhiashutosh14/nl2sql-agent
-   Files: agent.py, guard.py, evaluate.py, schema.py, prompts.py, schema_adapters.py, etc.
-
-2. **ai-job-search** by MadsLorentzen (MIT License)  
-   https://github.com/MadsLorentzen/ai-job-search
-   Patterns: LangGraph report pipeline structure, grader eval loop
-
-Original works licensed under MIT License.  
-Enhancements and integration by Prithvi Monangi (MIT License).
-
-See [NOTICE](NOTICE) for full attribution details.
+Ground truth is the injected truth, computed independently of the code under
+test; refusals score harsher than answers; every historical bug is a permanent
+test case; floors are reported, not means.
 
 ## License
 
-MIT License — see [LICENSE](LICENSE) for details.
+MIT — see [LICENSE](LICENSE) and [NOTICE](NOTICE).

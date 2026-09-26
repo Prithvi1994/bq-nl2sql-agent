@@ -28,10 +28,6 @@ eval = [
     "langsmith>=0.1.0",
 ]
 
-[project.scripts]
-nl2sql-local = "nl2sql.cli_local:main"
-nl2sql-eval = "nl2sql.evaluate:main"
-
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"

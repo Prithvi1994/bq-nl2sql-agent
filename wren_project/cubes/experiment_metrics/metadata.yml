@@ -1,77 +1,97 @@
 name: experiment_metrics
 properties:
   description: >
-    THE metric catalog for the daily-aggregated grain. These measures are the only
-    sanctioned way to compute an experiment metric; never hand-write an aggregate
-    over experiment_daily. Rooted at experiment_daily (one row per day per variant):
-    the denominator rules live in the measures' structure itself — every rate is
-    SUM(numerator) / SUM(users), never an average of day-level rates and never
-    COUNT of day-rows.
-base_object: experiment_daily
+    THE metric catalog over the scoresheet. Two measure classes, structurally
+    separated so sum-safety is enforced by construction:
+    COMPUTE measures aggregate the sum-safe outcome totals across disjoint
+    slices (the engine injects overall_flag = FALSE; detail rows only).
+    PASS-THROUGH measures read the platform-precomputed per-user rates and
+    lifts as stored: they are derived columns, never aggregated, never
+    recomputed from rounded dollars.
+  sum_rule: >
+    Outcome totals (purchases, add_to_cart, gmv) sum ONLY across disjoint
+    slices — one level per slice dimension, detail rows only (never both a
+    detail row and the Overall row, never across days). If a requested slice
+    would span both, refuse; do not silently mix.
+  lift_rule: >
+    Lifts are fractions stored by the platform (0.0175 = +1.75%). They are
+    read, not recomputed. gmv_tot_lift is a per-user lift despite its name;
+    narration must say per-user.
+  baseline_rule: >
+    The baseline for every lift is is_control = 1 (config), never inferred.
+base_object: experiment_scoresheet
 measures:
-  # --- population ------------------------------------------------------------------
-  - name: assigned_users
-    expression: SUM(users)
-    type: bigint
-    description: >
-      The denominator of record at daily grain: the sum of assigned users active
-      per day. NOT COUNT(*) — COUNT(*) over day-rows is user-days and inflates
-      every rate by ~40x. Pooling rule: SUM(numerator) / SUM(users); never
-      AVG(day rates), which weights quiet days equally with heavy days.
-  # --- conversion ------------------------------------------------------------------
+  # --- COMPUTE class: sum-safe totals, disjoint detail slices only -------------
   - name: total_purchases
     expression: SUM(purchases)
     type: bigint
-    description: Total purchase events in the window.
+    description: "Purchase events, summed across disjoint daily slices."
+  - name: total_add_to_cart
+    expression: SUM(add_to_cart)
+    type: bigint
+    description: "Cart events, summed across disjoint daily slices."
+  - name: total_gmv
+    expression: SUM(gmv)
+    type: double
+    description: "GMV in USD, summed across disjoint daily slices."
+  - name: total_users
+    expression: SUM(users)
+    type: bigint
+    description: >
+      Pooled denominator: sum of per-day distinct users across disjoint daily
+      slices. This is the ONLY legal way to obtain a windowed user total;
+      summing the users column of Overall rows double-counts. Never average
+      day rates instead of pooling.
   - name: purchase_rate
-    expression: SAFE_DIVIDE(total_purchases, assigned_users)
+    expression: SAFE_DIVIDE(total_purchases, total_users)
+    type: double
+    description: "Pooled conversion: SUM(purchases)/SUM(users) over disjoint slices."
+  - name: gmv_per_user_pooled
+    expression: SAFE_DIVIDE(total_gmv, total_users)
+    type: double
+    description: "Pooled GMV per user over disjoint slices."
+  # --- PASS-THROUGH class: platform-precomputed cuts, read as stored -----------
+  - name: purch_per_user_stage
+    expression: purch_per_user
+    type: double
+    description: "Stored pooled conversion for the cut. Read, never aggregated."
+  - name: gmv_per_user_stage
+    expression: gmv_per_user
+    type: double
+    description: "Stored north-star cut. Read, never aggregated, never recomputed."
+  - name: purch_lift_stage
+    expression: purch_lift
+    type: double
+    description: "Stored purchase lift vs matching control (fraction). Control rows NULL."
+  - name: gmv_tot_lift_stage
+    expression: gmv_tot_lift
     type: double
     description: >
-      Pooled conversion: total purchase events over total assigned active users.
-      This is the sum-ratio estimator; the day-level CI lives in stats.py, not here.
-  # --- engagement ------------------------------------------------------------------
-  - name: total_sessions
-    expression: SUM(sessions)
-    type: bigint
-    description: Total sessions in the window.
-  - name: sessions_per_user
-    expression: SAFE_DIVIDE(total_sessions, assigned_users)
-    type: double
-    description: Pooled sessions per assigned active user.
-  - name: total_pageviews
-    expression: SUM(pageviews)
-    type: bigint
-    description: Total pageviews in the window.
-  - name: pageviews_per_user
-    expression: SAFE_DIVIDE(total_pageviews, assigned_users)
-    type: double
-    description: Pooled pageviews per assigned active user.
-  # --- revenue ---------------------------------------------------------------------
-  - name: total_revenue
-    expression: SUM(revenue_usd)
-    type: double
-    description: Total revenue in USD.
-  - name: revenue_per_user
-    expression: SAFE_DIVIDE(total_revenue, assigned_users)
-    type: double
-    description: Pooled revenue per assigned active user, including zero-spend days.
-  - name: revenue_per_purchaser
-    expression: SAFE_DIVIDE(total_revenue, total_purchases)
-    type: double
-    description: >
-      Average order value. Denominator is purchase EVENTS. Dividing by assigned_users
-      here silently redefines the metric as revenue_per_user.
+      Stored lift behind the trap name: values are per-user GMV lift. Read as
+      a per-user lift; never narrate it as a total-dollars ratio.
 dimensions:
-  - name: variant
-    expression: variant
+  - name: variant_id
+    expression: variant_id
     type: varchar
-    description: The arm the day's activity belongs to. 'control' is the baseline.
+    description: "Stable arm key. Bind on this, never variant_nm."
+  - name: variant_nm
+    expression: variant_nm
+    type: varchar
+    description: "Display label only."
   - name: experiment_id
     expression: experiment_id
     type: varchar
   - name: metric_date
     expression: metric_date
     type: date
-  - name: country
-    expression: country
+    description: "Snapshot date; NULL on Overall rows."
+  - name: slice_country
+    expression: slice_country
     type: varchar
+  - name: slice_page
+    expression: slice_page
+    type: varchar
+  - name: overall_flag
+    expression: overall_flag
+    type: boolean
+    description: "TRUE = whole-test rollup row (cut is fully precomputed there)."

@@ -1,35 +1,73 @@
-name: experiment_daily
+name: experiment_scoresheet
 properties:
   description: >
-    One row per experiment per day per variant — the platform's daily-aggregated
-    grain. Every experiment table conforms to this column set. users is the
-    number of ASSIGNED users active that day per arm: it is the only correct
-    denominator column; dividing by COUNT of day-rows is user-days, not users.
+    The platform scoresheet: one row per experiment per day per variant per slice,
+    with PRECOMPUTED per-user rates and lifts. Two measure classes live in the cube,
+    never here. This model speaks only facts: what columns exist, where the table
+    physically lives, and the grain. Sum-safety is a column property recorded here
+    as descriptions: outcome totals sum ONLY across disjoint slices (never both a
+    detail row and the Overall row, never across days); per-user rates, lifts and
+    the users denominator are NEVER sums.
 table_reference:
   catalog: abtest
   schema: main
-  table: fact_daily_variant_metrics
+  table: exp_scoresheet
 columns:
-  - name: metric_date
-    type: date
   - name: experiment_id
     type: varchar
-  - name: variant
+  - name: metric_date
+    type: date
+    description: "Snapshot date. NULL on Overall rollup rows. Filter on it for cheap queries."
+  - name: variant_id
     type: varchar
-    description: The arm the day's activity belongs to. 'control' is the baseline.
-  - name: phase
+    description: "Stable arm key (ctl / t1 / t2). The binding key, never variant_nm."
+  - name: variant_nm
     type: varchar
-    description: "'pre' is before the test started, 'test' is the test window."
+    description: "Display label only. Not unique across tenants."
+  - name: is_control
+    type: integer
+    description: "1 = baseline. Comes from config; never inferred by an LLM."
+  - name: slice_country
+    type: varchar
+    description: "'Overall' means all countries."
+  - name: slice_page
+    type: varchar
+    description: "'Overall' means all pages."
+  - name: overall_flag
+    type: boolean
+    description: "TRUE = whole-test rollup row. Detail and rollup coexist here; never mix."
   - name: users
     type: bigint
-    description: Assigned users active this day per arm. The denominator column.
-  - name: sessions
-    type: bigint
-  - name: pageviews
-    type: bigint
+    description: >
+      Distinct assigned users active in the slice. The denominator of record.
+      Window uncertain (can drift). The pooled denominator is SUM over disjoint
+      daily rows, never this column on rollup rows.
   - name: purchases
     type: bigint
-  - name: revenue_usd
+    description: "Purchase events in the slice-day. Sum-safe ONLY across disjoint slices."
+  - name: add_to_cart
+    type: bigint
+    description: "Cart events. Sum-safe ONLY across disjoint slices."
+  - name: gmv
     type: double
-  - name: country
-    type: varchar
+    description: "Gross merchandise value in USD. Sum-safe ONLY across disjoint slices."
+  - name: purch_per_user
+    type: double
+    description: "PRECOMPUTED pooled conversion per user; a derived column, never a sum."
+  - name: gmv_per_user
+    type: double
+    description: >
+      PRECOMPUTED GMV per user — the north-star metric. Derived, never a sum,
+      never recomputed from rounded dollars.
+  - name: purch_lift
+    type: double
+    description: >
+      PRECOMPUTED relative lift vs matching control, as a fraction
+      (0.0175 = +1.75%). Control rows NULL. Per whole cut, not per day
+      (detail rows are NULL).
+  - name: gmv_tot_lift
+    type: double
+    description: >
+      WARNING trap column: name says total-gmv lift but the VALUES are the
+      per-user lift. Treat exactly like a per-user lift. Never reconstruct a
+      total-dollars ratio from this. Control rows NULL.
