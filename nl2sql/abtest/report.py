@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 from jinja2 import Environment, BaseLoader
 
 from nl2sql.abtest.charts import cut_bars, ramp_chart
+from nl2sql.abtest import lift_viz
 
 DEFAULT_SLICES = {"slice_country": ["US", "FR", "JP", "GB", "BR", "DE", "IN"],
                   "slice_page": ["Overall"]}
@@ -49,6 +50,10 @@ TEMPLATE = """<!doctype html>
 {% for r in decision.reasons %}<li>{{ r }}</li>{% endfor %}
 
 {% if chart_ramp %}<h2>Weekly ramp (north star)</h2><img class="chart" src="data:image/png;base64,{{ chart_ramp }}">{% if not ramp.stable %}<p><em>Not stable across weeks — treat headline with caution.</em></p>{% endif %}{% endif %}
+
+{% if chart_verdict %}<h2>Verdict at a glance</h2><img class="chart" src="data:image/png;base64,{{ chart_verdict }}">{% endif %}
+{% if chart_tiles %}<h2>Lift tiles (north star)</h2><img class="chart" src="data:image/png;base64,{{ chart_tiles }}">
+<p><em>Tile size = sample-days; color = lift (fixed [-50%, +50%] scale); washed out = CI overlaps 0; gray = SRM-HOLD.</em></p>{% endif %}
 
 <h2>Headline cuts (whole window, pooled)</h2>
 <table><tr><th>metric</th><th>variant</th><th>lift</th><th>95% CI</th><th>p</th><th>sig</th></tr>
@@ -212,6 +217,14 @@ def build_report(db: str, experiment_id: str, domain: str, out_path: str,
         charts["ramp"] = ramp_chart(d["ramp"])
     except Exception:
         pass
+    try:
+        charts["verdict"] = lift_viz.verdict_grid(d)
+    except Exception:
+        pass
+    try:
+        charts["tiles"] = lift_viz.cut_tiles(d, ns)
+    except Exception:
+        pass
     sections = []
     for variant in [v for v in (d["headline"].get(ns) or {}) if v]:
         try:
@@ -232,6 +245,7 @@ def build_report(db: str, experiment_id: str, domain: str, out_path: str,
               "n_query_queries": len(d.get("queries", []))},
         decision=d["decision"], summary=narration["summary"],
         chart_ramp=charts.get("ramp", ""), ramp=d["ramp"],
+        chart_verdict=charts.get("verdict", ""), chart_tiles=charts.get("tiles", ""),
         headline=d["headline"],
         headline_method="sum-ratio with day-cluster CI",
         sections=sections, cuts=d["cuts"],
