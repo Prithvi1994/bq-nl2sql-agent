@@ -209,6 +209,8 @@ def build_report(db: str, experiment_id: str, domain: str, out_path: str,
     row = resolve(db, domain, experiment_id)
     result = _sw.sweep(db, experiment_id, row, slices=DEFAULT_SLICES)
     d = result.to_dict()
+    labels = row.get("variant_labels") or {}
+    d["variant_labels"] = {str(k): v for k, v in labels.items()} if isinstance(labels, dict) else {}
     narration = narrate(d)
 
     charts: Dict[str, str] = {}

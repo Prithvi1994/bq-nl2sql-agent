@@ -24,6 +24,7 @@ Design rules
 """
 from __future__ import annotations
 
+import json
 import re
 
 import duckdb
@@ -51,7 +52,8 @@ CREATE TABLE IF NOT EXISTS dim_experiment_registry (
     north_star_metric VARCHAR,        -- the headline KPI; narration reads verdicts on it
     guardrail_metric VARCHAR,
     ship_threshold  DOUBLE,
-    guardrail_tolerance DOUBLE
+    guardrail_tolerance DOUBLE,
+    variant_labels  VARCHAR          -- JSON: {"t1": "Fast Pay", "control": "..."}
 )
 """
 
@@ -63,6 +65,12 @@ def ensure_registry(db_path: str) -> None:
     con = duckdb.connect(db_path)
     try:
         con.execute(REGISTRY_DDL)
+        cols = {r[0] for r in con.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'dim_experiment_registry'").fetchall()}
+        if "variant_labels" not in cols:
+            con.execute(
+                "ALTER TABLE dim_experiment_registry ADD COLUMN variant_labels VARCHAR")
     finally:
         con.close()
 
@@ -84,6 +92,7 @@ def register(
     guardrail_metric: str = "",
     ship_threshold: Optional[float] = None,
     guardrail_tolerance: Optional[float] = None,
+    variant_labels: Optional[Dict[str, str]] = None,
 ) -> None:
     """Insert or update one experiment. Idempotent: re-registering replaces."""
     ensure_registry(db_path)
@@ -96,6 +105,13 @@ def register(
         raise RegistryError(f"invalid domain {domain!r}")
     # Idempotent replace: one row per experiment. Writes go through a direct
     # rw connection — the read-only query executor refuses DML by design.
+    if variant_labels is not None:
+        unknown = set(variant_labels) - set(variants) - {"control"}
+        if unknown:
+            raise RegistryError(f"variant_labels for unknown variants: {sorted(unknown)}")
+        labels_json = json.dumps(variant_labels)
+    else:
+        labels_json = None
     identifier = experiment_id  # validated [a-z0-9_] above
     con = duckdb.connect(db_path)
     try:
@@ -104,13 +120,13 @@ def register(
             [identifier],
         )
         con.execute(
-            "INSERT INTO dim_experiment_registry VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO dim_experiment_registry VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [
                 identifier, domain, name or experiment_id, table, schema,
                 started_on or None, ended_on or None,
                 ",".join(variants), ",".join(metric_columns),
                 ",".join(dimension_columns), north_star_metric, guardrail_metric,
-                ship_threshold, guardrail_tolerance,
+                ship_threshold, guardrail_tolerance, labels_json,
             ],
         )
     finally:
@@ -122,7 +138,7 @@ def _rows(db_path: str) -> List[Dict[str, Any]]:
     res = run_bq_query(
         "SELECT experiment_id, domain, name, table_name, schema, started_on, ended_on, "
         "variants, metric_columns, dimension_columns, north_star_metric, guardrail_metric, "
-        "ship_threshold, guardrail_tolerance FROM dim_experiment_registry",
+        "ship_threshold, guardrail_tolerance, variant_labels FROM dim_experiment_registry",
         db_path, row_limit=10_000,
     )
     if not res.ok:
@@ -130,7 +146,7 @@ def _rows(db_path: str) -> List[Dict[str, Any]]:
     cols = ["experiment_id", "domain", "name", "table_name", "schema",
             "started_on", "ended_on", "variants", "metric_columns",
             "dimension_columns", "north_star_metric", "guardrail_metric",
-            "ship_threshold", "guardrail_tolerance"]
+            "ship_threshold", "guardrail_tolerance", "variant_labels"]
     return [dict(zip(cols, r)) for r in res.rows]
 
 
@@ -174,6 +190,12 @@ def resolve(db_path: str, domain: str, experiment_id: str) -> Dict[str, Any]:
         ).fetchone()[0] > 0
     finally:
         con.close()
+    labels = hit.get("variant_labels")
+    if labels:
+        try:
+            hit["variant_labels"] = json.loads(labels)
+        except (ValueError, TypeError):
+            hit["variant_labels"] = None
     return {**hit, "table_exists": exists}
 
 
