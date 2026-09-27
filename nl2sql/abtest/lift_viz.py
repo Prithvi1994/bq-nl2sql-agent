@@ -36,8 +36,10 @@ def _b64(fig) -> str:
 
 
 def _srm_hold(readout: Dict[str, Any]) -> bool:
-    return ((readout.get("srm") or {}).get("status") == "SRM-HOLD"
-            or (readout.get("decision", {}).get("verdict") == "SRM-HOLD"))
+    srm = readout.get("srm") or {}
+    hold_verdicts = {"SRM-HOLD", "HOLD"}
+    return (srm.get("detected") is True
+            or (readout.get("decision") or {}).get("verdict") in hold_verdicts)
 
 
 def _cut_color(cut: Dict[str, Any], hold: bool) -> Any:
